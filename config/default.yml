@@ -311,6 +311,58 @@ notification:
     system_error: true             # 시스템 에러 발생 시
 
 # ------------------------------------------------------------
+# LLM 프로바이더 (LLM Provider)
+# 에이전트의 분석/판단/자연어 처리에 사용하는 LLM 설정
+# ------------------------------------------------------------
+llm:
+  # 기본 프로바이더 | claude | gemini | openai | 위험: Caution
+  default_provider: "claude"
+
+  # 기본 모델 (프로바이더별 기본 모델)
+  # Claude: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5
+  # Gemini: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash-lite
+  # OpenAI: gpt-4o, gpt-4o-mini
+  # 위험: Caution
+  default_model: "claude-sonnet-4-6"
+
+  # 폴백 프로바이더 (주 프로바이더 장애 시) | 위험: Normal
+  fallback_provider: "gemini"
+  fallback_model: "gemini-2.5-pro"
+
+  # 온도 (Temperature) | 범위: 0.0 ~ 1.0 | 위험: Normal
+  temperature: 0.3
+
+  # 최대 토큰 수 | 범위: 256 ~ 32768 | 위험: Normal
+  max_tokens: 4096
+
+  # 재시도 설정
+  retry:
+    max_retries: 3                  # 최대 재시도 횟수 | 범위: 1 ~ 10
+    backoff: "exponential"          # 재시도 간격 방식 | exponential | linear
+    initial_delay_seconds: 1        # 초기 대기 시간 (초) | 범위: 0.5 ~ 5.0
+
+  # 폴백 설정
+  fallback:
+    consecutive_failures: 5         # 폴백 전환 기준 연속 실패 수 | 범위: 3 ~ 20
+    recovery_check_minutes: 5       # 주 프로바이더 정상화 확인 주기 (분) | 범위: 1 ~ 30
+    auto_recover: true              # 정상화 시 자동 복귀 여부
+
+  # 에이전트별 프로바이더/모델 오버라이드 (설정 시 기본값 대신 사용)
+  # 미설정 에이전트는 default_provider / default_model 사용
+  agent_overrides:
+    orchestrator:
+      model: "claude-opus-4-6"       # 최종 의사결정에 최고 성능 모델
+    analyst_sentiment:
+      model: "claude-haiku-4-5"      # 단순 감성 분류에 경량 모델
+    executor:
+      model: "claude-haiku-4-5"      # 주문 파라미터 검증에 경량 모델
+
+  # 비용 제한
+  cost:
+    daily_limit_usd: 50.0            # 일일 LLM 비용 한도 (USD) | 범위: 5 ~ 500 | 위험: Caution
+    alert_threshold: 0.80            # 한도 대비 알림 비율 | 범위: 0.50 ~ 0.95
+
+# ------------------------------------------------------------
 # 시스템 전체 제어 (System Control)
 # ------------------------------------------------------------
 system:
@@ -337,6 +389,7 @@ presets:
     risk.trailing_stop: 0.02
     signal.buy_threshold: 70
     signal.consensus_similarity_min: 0.75
+    llm.default_model: "claude-opus-4-6"      # 보수적 판단을 위해 최고 모델
 
   balanced:
     # 모든 값 기본값 사용 (이 프리셋은 default.yml 자체)
@@ -350,6 +403,7 @@ presets:
     risk.trailing_stop: 0.05
     signal.buy_threshold: 40
     signal.consensus_similarity_min: 0.50
+    llm.default_model: "claude-sonnet-4-6"    # 빠른 판단 + 비용 절약
 
   crisis:
     fund.reserve_ratio: 0.50

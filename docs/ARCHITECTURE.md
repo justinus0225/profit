@@ -784,7 +784,7 @@ Phase 7: 사후 관리 (Post-Trade)
 | **언어** | Python 3.12+ | 금융 라이브러리 생태계, 비동기 지원 |
 | **웹 프레임워크** | FastAPI | 비동기 REST API, WebSocket 지원 |
 | **에이전트 엔진** | LangChain / Custom | LLM 기반 에이전트 오케스트레이션 |
-| **LLM** | Claude API (Opus/Sonnet) | 분석, 판단, 자연어 처리 |
+| **LLM** | Claude / Gemini API (멀티 프로바이더) | 분석, 판단, 자연어 처리 (프로바이더 전환 가능) |
 | **시계열 DB** | TimescaleDB | PostgreSQL 호환, 시계열 최적화 |
 | **캐시/메시지** | Redis | 에이전트 간 pub/sub, 실시간 캐시 |
 | **프론트엔드** | React + TypeScript | 관리자 대시보드 |
@@ -798,7 +798,238 @@ Phase 7: 사후 관리 (Post-Trade)
 
 ---
 
-# 10. 프로젝트 디렉토리 구조 (예정)
+# 10. LLM 프로바이더 추상화 계층
+
+## 10.1. 설계 원칙
+
+LLM은 시스템의 핵심 인프라로, 모든 에이전트의 분석/판단/자연어 처리에 사용된다.
+**Claude**와 **Gemini**를 주요 프로바이더로 지원하며, OpenAI 등 다른 LLM도 확장 가능하다.
+Admin UI 또는 OpenClaw 메시지를 통해 실시간으로 프로바이더를 전환할 수 있다.
+
+| 원칙 | 설명 |
+|------|------|
+| **프로바이더 무관 인터페이스** | 모든 에이전트는 `LLMClient` 추상 인터페이스만 사용. 프로바이더 교체 시 에이전트 코드 수정 불필요 |
+| **에이전트별 독립 설정** | 각 에이전트가 서로 다른 프로바이더/모델을 사용 가능 (예: 분석은 Claude Opus, 실행은 Gemini Flash) |
+| **실시간 전환** | 프로바이더 변경 시 다음 LLM 호출부터 즉시 적용. 진행 중인 요청은 기존 프로바이더로 완료 |
+| **자동 폴백** | 주 프로바이더 장애 시 자동으로 폴백 프로바이더로 전환 |
+| **비용/성능 최적화** | 작업 복잡도에 따라 모델 등급 자동 선택 (고급 분석 → Opus, 단순 분류 → Haiku/Flash) |
+
+## 10.2. 아키텍처
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   LLM 프로바이더 추상화 계층                    │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │                  LLMClient (추상 인터페이스)            │   │
+│  │                                                       │   │
+│  │  chat(messages, model, temperature, ...) → Response   │   │
+│  │  analyze(prompt, context) → AnalysisResult            │   │
+│  │  embed(text) → Vector                                 │   │
+│  │  stream(messages, ...) → AsyncIterator                │   │
+│  └──────────────┬────────────────────────────────────────┘   │
+│                 │                                             │
+│    ┌────────────┼────────────┬────────────┐                  │
+│    ▼            ▼            ▼            ▼                  │
+│ ┌────────┐ ┌────────┐ ┌────────┐ ┌──────────┐              │
+│ │Claude  │ │Gemini  │ │OpenAI  │ │Custom    │              │
+│ │Provider│ │Provider│ │Provider│ │Provider  │              │
+│ │        │ │        │ │        │ │          │              │
+│ │Opus    │ │Pro     │ │GPT-4o  │ │Llama    │              │
+│ │Sonnet  │ │Flash   │ │GPT-4o  │ │Mistral  │              │
+│ │Haiku   │ │Nano    │ │mini    │ │etc.     │              │
+│ └────────┘ └────────┘ └────────┘ └──────────┘              │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │              LLM Router (라우팅 엔진)                   │   │
+│  │                                                       │   │
+│  │  1. 에이전트별 프로바이더/모델 매핑                       │   │
+│  │  2. 작업 복잡도별 모델 등급 자동 선택                     │   │
+│  │  3. 장애 감지 → 폴백 프로바이더 전환                     │   │
+│  │  4. 요청량/비용 추적                                    │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## 10.3. 지원 프로바이더 및 모델
+
+| 프로바이더 | 모델 | 등급 | 주 용도 |
+|-----------|------|------|---------|
+| **Claude** (Anthropic) | `claude-opus-4-6` | Premium | 복잡한 시장 분석, 종합 판단, 투자 견해 리포트 |
+| | `claude-sonnet-4-6` | Standard | 일반 분석, 시그널 생성, 자연어 처리 |
+| | `claude-haiku-4-5` | Light | 단순 분류, 감성 분석, 데이터 정제 |
+| **Gemini** (Google) | `gemini-2.5-pro` | Premium | 복잡한 분석, 대량 컨텍스트 처리 |
+| | `gemini-2.5-flash` | Standard | 일반 분석, 빠른 응답이 필요한 작업 |
+| | `gemini-2.0-flash-lite` | Light | 단순 분류, 실시간 데이터 처리 |
+| **OpenAI** (선택) | `gpt-4o` | Premium | 대안 프로바이더 |
+| | `gpt-4o-mini` | Light | 대안 프로바이더 |
+
+## 10.4. 에이전트별 LLM 매핑 (기본값)
+
+| 에이전트 | 기본 프로바이더 | 기본 모델 | 작업 복잡도 | 비고 |
+|---------|---------------|----------|-----------|------|
+| 오케스트레이터 | Claude | Opus | Premium | 최종 의사결정, 합의 조율 |
+| 경제 분석 (거시) | Claude | Sonnet | Standard | 거시 환경 분석, 뉴스 종합 |
+| 경제 분석 (미시) | Claude | Sonnet | Standard | 코인별 펀더멘탈 분석 |
+| 경제 분석 (감성) | Claude | Haiku | Light | 뉴스/SNS 감성 분류 |
+| 퀀트 에이전트 | Claude | Sonnet | Standard | 전략 평가, 시그널 해석 |
+| 리스크 관리 | Claude | Sonnet | Standard | 리스크 평가, 한도 판단 |
+| 포트폴리오 관리 | Claude | Sonnet | Standard | 포트폴리오 최적화 판단 |
+| 매매 실행 | Claude | Haiku | Light | 주문 파라미터 검증 |
+| OpenClaw 응답 | Claude | Sonnet | Standard | 관리자 자연어 인터페이스 |
+
+## 10.5. 폴백 체인
+
+프로바이더 장애(API 오류, Rate Limit, 타임아웃) 시 자동 폴백:
+
+```
+[LLM 호출 요청]
+     │
+     ▼
+[주 프로바이더 호출 (예: Claude Sonnet)]
+     │
+     ├── 성공 → 응답 반환
+     │
+     ├── 실패 (1~3회 재시도)
+     │        │
+     │        ▼
+     │   [동일 프로바이더 다른 모델 (예: Claude Haiku)]
+     │        │
+     │        ├── 성공 → 응답 반환 + 품질 저하 알림
+     │        │
+     │        ├── 실패
+     │        │     │
+     │        │     ▼
+     │        │  [폴백 프로바이더 (예: Gemini Pro)]
+     │        │     │
+     │        │     ├── 성공 → 응답 반환 + 프로바이더 전환 알림
+     │        │     │
+     │        │     └── 실패 → 에이전트 일시 중단 + 관리자 알림
+     │        │
+     └────────┘
+```
+
+| 폴백 설정 | 기본값 | 설명 |
+|-----------|--------|------|
+| 최대 재시도 | 3회 | 동일 프로바이더 내 재시도 |
+| 재시도 간격 | 지수 백오프 (1s, 2s, 4s) | 재시도 사이 대기 시간 |
+| 프로바이더 장애 판정 | 연속 5회 실패 | 폴백 프로바이더로 자동 전환 |
+| 자동 복구 확인 | 5분 주기 | 주 프로바이더 정상화 시 자동 복귀 |
+
+## 10.6. OpenClaw / Admin UI 전환 명령
+
+### OpenClaw 명령 예시
+
+```
+사용자: "LLM을 Gemini로 변경해줘"
+
+시스템: ⚠️ [Caution 설정 변경]
+  llm.default_provider: claude → gemini
+  영향: 전체 에이전트의 기본 LLM이 Gemini로 변경됩니다.
+        에이전트별 개별 설정은 유지됩니다.
+  정말 변경하시겠습니까? (예/아니오)
+
+사용자: "예"
+
+시스템: ✅ llm.default_provider 변경 완료
+  claude → gemini (적용 시각: 2026-03-01 14:30:00 UTC)
+  - 개별 설정이 없는 에이전트: Gemini Pro로 전환
+  - 개별 설정이 있는 에이전트: 기존 설정 유지
+```
+
+```
+사용자: "경제 분석은 Claude Opus로, 퀀트는 Gemini Pro로 설정해줘"
+
+시스템: ⚠️ [Caution 설정 변경] 2건
+  1. llm.agent_overrides.analyst.provider: (default) → claude
+     llm.agent_overrides.analyst.model: (default) → claude-opus-4-6
+  2. llm.agent_overrides.quant.provider: (default) → gemini
+     llm.agent_overrides.quant.model: (default) → gemini-2.5-pro
+  정말 변경하시겠습니까? (예/아니오)
+
+사용자: "예"
+
+시스템: ✅ 에이전트별 LLM 설정 변경 완료
+  - 경제 분석 에이전트: Claude Opus 4.6
+  - 퀀트 에이전트: Gemini 2.5 Pro
+```
+
+```
+사용자: "현재 LLM 설정 보여줘"
+
+시스템: 📊 LLM 프로바이더 현황
+  ─────────────────────────────────
+  ■ 기본 설정
+    프로바이더: Claude (Anthropic)
+    폴백: Gemini (Google)
+
+  ■ 에이전트별 설정
+  ┌──────────────┬──────────┬───────────────────┐
+  │ 에이전트      │ 프로바이더 │ 모델               │
+  ├──────────────┼──────────┼───────────────────┤
+  │ 오케스트레이터 │ Claude   │ claude-opus-4-6   │
+  │ 경제 분석     │ Claude   │ claude-sonnet-4-6 │
+  │ 퀀트         │ Gemini   │ gemini-2.5-pro    │
+  │ 리스크 관리   │ Claude   │ claude-sonnet-4-6 │
+  │ 포트폴리오    │ (기본값)  │ claude-sonnet-4-6 │
+  │ 매매 실행     │ (기본값)  │ claude-haiku-4-5  │
+  └──────────────┴──────────┴───────────────────┘
+
+  ■ 오늘 사용량
+    Claude: 1,247 호출 / $12.34
+    Gemini: 523 호출 / $3.21
+```
+
+### Admin UI - LLM Settings 페이지
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  P.R.O.F.I.T. Settings > LLM Provider                   │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  ── Default Provider ──────────────────────────────────  │
+│                                                          │
+│  Provider:  [Claude ▼]   Model: [claude-sonnet-4-6 ▼]   │
+│  Fallback:  [Gemini ▼]   Model: [gemini-2.5-pro   ▼]    │
+│                                                          │
+│  ── API Keys ──────────────────────────────────────────  │
+│                                                          │
+│  Claude:  [sk-ant-...****] [Test] ✅ Connected           │
+│  Gemini:  [AIza...****]    [Test] ✅ Connected           │
+│  OpenAI:  [Not configured] [Add Key]                     │
+│                                                          │
+│  ── Agent Overrides ───────────────────────────────────  │
+│                                                          │
+│  │ Agent          │ Provider │ Model             │ Tier │ │
+│  ├────────────────┼──────────┼───────────────────┼──────┤ │
+│  │ Orchestrator   │ Claude ▼ │ claude-opus-4-6 ▼ │ Prem │ │
+│  │ Analyst (Macro)│ Claude ▼ │ claude-sonnet   ▼ │ Std  │ │
+│  │ Analyst (Sent.)│ Claude ▼ │ claude-haiku    ▼ │ Lite │ │
+│  │ Quant          │ Gemini ▼ │ gemini-2.5-pro  ▼ │ Prem │ │
+│  │ Risk Manager   │ Default  │ (claude-sonnet) ▼ │ Std  │ │
+│  │ Portfolio      │ Default  │ (claude-sonnet) ▼ │ Std  │ │
+│  │ Executor       │ Default  │ (claude-haiku)  ▼ │ Lite │ │
+│  │ OpenClaw       │ Default  │ (claude-sonnet) ▼ │ Std  │ │
+│                                                          │
+│  ── Fallback & Retry ──────────────────────────────────  │
+│                                                          │
+│  Max Retries:        [3  ▼]                              │
+│  Retry Backoff:      [exponential ▼] (1s, 2s, 4s)       │
+│  Provider Failover:  [5  ▼] consecutive failures         │
+│  Auto Recovery:      [5  ▼] minutes check interval       │
+│                                                          │
+│  ── Usage Today ───────────────────────────────────────  │
+│                                                          │
+│  Claude:  1,247 calls  │  $12.34  │  ████████░░ 78%      │
+│  Gemini:    523 calls  │  $ 3.21  │  ███░░░░░░░ 22%      │
+│                                                          │
+│                          [Reset to Defaults] [Save All]  │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+# 11. 프로젝트 디렉토리 구조 (예정)
 
 ```
 profit/
@@ -812,7 +1043,17 @@ profit/
 │   ├── core/
 │   │   ├── orchestrator.py       # 오케스트레이터
 │   │   ├── consensus.py          # 합의 메커니즘
-│   │   └── config.py             # 시스템 설정 관리
+│   │   ├── config.py             # 시스템 설정 관리
+│   │   └── llm/                  # ★ LLM 프로바이더 추상화
+│   │       ├── __init__.py
+│   │       ├── client.py         # LLMClient 추상 인터페이스
+│   │       ├── router.py         # LLM Router (에이전트별 라우팅)
+│   │       ├── providers/
+│   │       │   ├── __init__.py
+│   │       │   ├── claude.py     # Claude (Anthropic) 프로바이더
+│   │       │   ├── gemini.py     # Gemini (Google) 프로바이더
+│   │       │   └── openai.py     # OpenAI 프로바이더 (선택)
+│   │       └── fallback.py       # 폴백 체인 관리
 │   │
 │   ├── agents/
 │   │   ├── base.py               # 기본 에이전트 추상 클래스
@@ -939,7 +1180,7 @@ profit/
 1. **멀티 에이전트 합의 구조**: 단일 봇 시스템 대비 의사결정 견고성이 우수. 2-out-of-3 쿼럼 + 리스크 거부권은 학술 근거(arXiv:2602.23330)가 있는 설계
 2. **펀더멘탈+기술적 2단계 선별**: 상용 봇들이 기술적 지표만 사용하는 것과 달리, 거시/미시 경제 분석을 통합한 코인 선별
 3. **리스크 관리 독립성**: 매매와 리스크의 분리는 기관급 설계 원칙을 정확히 반영
-4. **LLM 네이티브 아키텍처**: Claude API 기반 자연어 분석/판단/인터페이스 통합은 기존 퀀트 플랫폼에 없는 차세대 접근
+4. **LLM 네이티브 아키텍처**: Claude/Gemini 멀티 프로바이더 기반 자연어 분석/판단/인터페이스 통합은 기존 퀀트 플랫폼에 없는 차세대 접근. 프로바이더 추상화로 실시간 전환 및 폴백 지원
 5. **투명한 의사결정 추적**: 에이전트 판단 근거, 합의 과정, 코사인 유사도까지 기록하는 매매일지
 
 ## 13.3. 식별된 핵심 갭 및 보완 사항
@@ -1238,7 +1479,12 @@ profit/
 │   │   ├── orchestrator.py
 │   │   ├── consensus.py
 │   │   ├── config.py
-│   │   └── event_engine.py        # ★ 통합 이벤트 엔진
+│   │   ├── event_engine.py        # ★ 통합 이벤트 엔진
+│   │   └── llm/                   # ★ LLM 프로바이더 추상화 계층
+│   │       ├── client.py          #   추상 인터페이스
+│   │       ├── router.py          #   에이전트별 라우팅
+│   │       ├── providers/         #   Claude, Gemini, OpenAI 등
+│   │       └── fallback.py        #   폴백 체인 관리
 │   │
 │   ├── agents/
 │   │   ├── base.py

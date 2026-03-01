@@ -303,6 +303,131 @@
 
 ---
 
+## 2.11. LLM 프로바이더 (LLM Provider)
+
+에이전트의 분석/판단/자연어 처리에 사용되는 LLM 설정값.
+**Claude**와 **Gemini**를 주요 프로바이더로 지원하며, OpenAI 등 다른 LLM도 확장 가능하다.
+
+### 기본 설정
+
+| 키 | 설명 | 기본값 | 선택지/범위 | 위험등급 |
+|----|------|--------|-------------|----------|
+| `llm.default_provider` | 기본 LLM 프로바이더 | `claude` | claude, gemini, openai | Caution |
+| `llm.default_model` | 기본 모델 ID | `claude-sonnet-4-6` | 프로바이더별 모델 목록 참조 | Caution |
+| `llm.fallback_provider` | 폴백 프로바이더 | `gemini` | claude, gemini, openai | Normal |
+| `llm.fallback_model` | 폴백 모델 ID | `gemini-2.5-pro` | 프로바이더별 모델 목록 참조 | Normal |
+| `llm.temperature` | 응답 온도 (창의성 조절) | `0.3` | 0.0~1.0 | Normal |
+| `llm.max_tokens` | 최대 출력 토큰 수 | `4096` | 256~32768 | Normal |
+
+### 프로바이더별 모델 ID
+
+| 프로바이더 | 모델 ID | 등급 | 설명 |
+|-----------|---------|------|------|
+| Claude | `claude-opus-4-6` | Premium | 최고 성능, 복잡한 분석/판단 |
+| Claude | `claude-sonnet-4-6` | Standard | 균형 잡힌 성능/비용 |
+| Claude | `claude-haiku-4-5` | Light | 경량, 단순 분류/검증 |
+| Gemini | `gemini-2.5-pro` | Premium | 대량 컨텍스트, 복잡한 분석 |
+| Gemini | `gemini-2.5-flash` | Standard | 빠른 응답, 일반 분석 |
+| Gemini | `gemini-2.0-flash-lite` | Light | 경량, 실시간 처리 |
+| OpenAI | `gpt-4o` | Premium | 대안 프로바이더 |
+| OpenAI | `gpt-4o-mini` | Light | 대안 프로바이더 |
+
+### 재시도 및 폴백
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `llm.retry.max_retries` | 동일 프로바이더 내 최대 재시도 | `3` | 1~10 | Normal |
+| `llm.retry.backoff` | 재시도 간격 방식 | `exponential` | exponential, linear | Normal |
+| `llm.retry.initial_delay_seconds` | 첫 재시도 대기 시간 (초) | `1` | 0.5~5.0 | Normal |
+| `llm.fallback.consecutive_failures` | 폴백 전환 기준 연속 실패 수 | `5` | 3~20 | Normal |
+| `llm.fallback.recovery_check_minutes` | 주 프로바이더 정상화 확인 주기 (분) | `5` | 1~30 | Normal |
+| `llm.fallback.auto_recover` | 정상화 시 자동 복귀 여부 | `true` | true/false | Normal |
+
+### 에이전트별 오버라이드
+
+개별 에이전트에 기본값과 다른 프로바이더/모델을 지정할 수 있다.
+미설정 에이전트는 `llm.default_provider` / `llm.default_model`을 사용한다.
+
+| 키 | 설명 | 기본값 | 위험등급 |
+|----|------|--------|----------|
+| `llm.agent_overrides.<agent>.provider` | 에이전트별 프로바이더 | (default) | Caution |
+| `llm.agent_overrides.<agent>.model` | 에이전트별 모델 ID | (default) | Caution |
+
+**`<agent>` 값**: `orchestrator`, `analyst_macro`, `analyst_micro`, `analyst_sentiment`, `quant`, `risk`, `portfolio`, `executor`, `openclaw`
+
+### 비용 제한
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `llm.cost.daily_limit_usd` | 일일 LLM 비용 한도 (USD) | `50.0` | 5~500 | Caution |
+| `llm.cost.alert_threshold` | 한도 대비 알림 발송 비율 | `0.80` | 0.50~0.95 | Normal |
+
+### OpenClaw 변경 예시
+
+```
+사용자: "LLM을 Gemini로 바꿔줘"
+
+시스템: ⚠️ [Caution 설정 변경]
+  llm.default_provider: claude → gemini
+  llm.default_model: claude-sonnet-4-6 → gemini-2.5-pro
+  영향: 개별 설정이 없는 전체 에이전트의 LLM이 Gemini로 변경됩니다.
+        에이전트별 개별 설정(orchestrator 등)은 유지됩니다.
+  정말 변경하시겠습니까? (예/아니오)
+
+사용자: "예"
+
+시스템: ✅ LLM 프로바이더 변경 완료
+  claude → gemini (적용 시각: 2026-03-01 14:30:00 UTC)
+  변경된 에이전트: analyst_macro, analyst_micro, quant, risk, portfolio, openclaw
+  유지된 에이전트: orchestrator (claude-opus-4-6), analyst_sentiment (claude-haiku-4-5)
+```
+
+```
+사용자: "퀀트 에이전트 LLM을 Claude Opus로 설정해줘"
+
+시스템: ⚠️ [Caution 설정 변경]
+  llm.agent_overrides.quant.provider: (default) → claude
+  llm.agent_overrides.quant.model: (default) → claude-opus-4-6
+  영향: 퀀트 에이전트가 Claude Opus 4.6을 사용합니다 (비용 증가).
+  정말 변경하시겠습니까? (예/아니오)
+
+사용자: "예"
+
+시스템: ✅ 퀀트 에이전트 LLM 변경 완료
+  (default) → claude-opus-4-6
+```
+
+```
+사용자: "현재 LLM 설정 보여줘"
+
+시스템: 📊 LLM 프로바이더 현황
+  ─────────────────────────────────
+  ■ 기본 설정
+    프로바이더: Claude (Anthropic)
+    모델: claude-sonnet-4-6
+    폴백: Gemini gemini-2.5-pro
+
+  ■ 에이전트별 현재 설정
+  ┌──────────────┬──────────┬───────────────────┬───────┐
+  │ 에이전트      │ 프로바이더 │ 모델               │ 비고   │
+  ├──────────────┼──────────┼───────────────────┼───────┤
+  │ 오케스트레이터 │ Claude   │ claude-opus-4-6   │ 개별   │
+  │ 경제분석(거시) │ Claude   │ claude-sonnet-4-6 │ 기본값 │
+  │ 경제분석(미시) │ Claude   │ claude-sonnet-4-6 │ 기본값 │
+  │ 경제분석(감성) │ Claude   │ claude-haiku-4-5  │ 개별   │
+  │ 퀀트          │ Claude   │ claude-opus-4-6   │ 개별   │
+  │ 리스크 관리    │ Claude   │ claude-sonnet-4-6 │ 기본값 │
+  │ 포트폴리오     │ Claude   │ claude-sonnet-4-6 │ 기본값 │
+  │ 매매 실행      │ Claude   │ claude-haiku-4-5  │ 개별   │
+  │ OpenClaw      │ Claude   │ claude-sonnet-4-6 │ 기본값 │
+  └──────────────┴──────────┴───────────────────┴───────┘
+
+  ■ 폴백 체인: Claude → Gemini (gemini-2.5-pro)
+  ■ 오늘 사용량: 1,247 호출 / $12.34 (한도: $50.00, 24.7%)
+```
+
+---
+
 # 3. OpenClaw 설정 변경 명령어
 
 ## 3.1. 자연어 명령 → 설정 매핑
@@ -358,6 +483,18 @@
 | "매매 재개" | `system.trading_enabled = true` | ⚠️ Critical. 매매를 재개합니다. 확인? |
 | "페이퍼 트레이딩 모드로 전환" | `system.paper_trading_mode = true` | ⚠️ Critical. 실거래 중단, 가상 체결 모드로 전환. 확인? |
 
+### LLM 프로바이더
+
+| 자연어 명령 | 매핑 키 | 예시 응답 |
+|-------------|---------|-----------|
+| "LLM을 Gemini로 변경해줘" | `llm.default_provider = gemini` | ⚠️ Caution. 전체 기본 프로바이더 변경, 확인 요청 |
+| "LLM Claude Opus로 바꿔" | `llm.default_model = claude-opus-4-6` | ⚠️ Caution. 기본 모델 변경 (비용 증가 안내) |
+| "경제 분석은 Gemini로" | `llm.agent_overrides.analyst_macro.provider = gemini` | ⚠️ Caution 변경, 확인 요청 |
+| "퀀트 에이전트 모델 Claude Opus로" | `llm.agent_overrides.quant.model = claude-opus-4-6` | ⚠️ Caution 변경, 확인 요청 |
+| "LLM 비용 한도 100달러로 올려" | `llm.cost.daily_limit_usd = 100` | 변경 완료 |
+| "현재 LLM 설정 보여줘" | 조회 | LLM 현황 테이블 출력 |
+| "LLM 사용량 보여줘" | 조회 | 프로바이더별 호출 수/비용 출력 |
+
 ### 조회 명령
 
 | 자연어 명령 | 동작 |
@@ -406,9 +543,9 @@
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────┐ │
 │  │Portfolio │ │Schedule  │ │Events    │ │Execution   │ │
 │  └──────────┘ └──────────┘ └──────────┘ └────────────┘ │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐                │
-│  │Alerts    │ │System    │ │Presets   │                 │
-│  └──────────┘ └──────────┘ └──────────┘                 │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────┐ │
+│  │Alerts    │ │System    │ │Presets   │ │LLM Provider│ │
+│  └──────────┘ └──────────┘ └──────────┘ └────────────┘ │
 │                                                          │
 │  ── Fund Management ─────────────────────────────────── │
 │                                                          │
@@ -496,4 +633,5 @@ OpenClaw 조회:
 | 실행 (`execution.*`) | 5 | 주문 유형, TWAP 설정 |
 | 알림 (`notification.*`) | 7 | 채널, 알림 레벨, 항목별 ON/OFF |
 | 시스템 (`system.*`) | 3 | 매매 ON/OFF, 페이퍼 트레이딩, 유지보수 |
-| **합계** | **85** | |
+| LLM 프로바이더 (`llm.*`) | 14 | 프로바이더, 모델, 폴백, 에이전트별 오버라이드, 비용 한도 |
+| **합계** | **99** | |
