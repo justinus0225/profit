@@ -1,0 +1,362 @@
+# ============================================================
+# P.R.O.F.I.T. Default Configuration
+# ============================================================
+# 이 파일의 모든 설정값은 Admin UI 또는 OpenClaw 메시지를 통해
+# 실시간으로 변경 가능합니다. 변경 즉시 적용되며 감사 로그에 기록됩니다.
+#
+# 위험 등급:
+#   Normal   - 즉시 적용
+#   Caution  - 변경 영향 표시 후 확인
+#   Critical - 2차 확인 + 관리자 알림
+# ============================================================
+
+# ------------------------------------------------------------
+# 자금 관리 (Fund Management)
+# 리스크 관리 에이전트가 참조
+# ------------------------------------------------------------
+fund:
+  # 최소 보유금 비율 (전체 자산 대비)
+  # 어떤 상황에서도 매매에 사용하지 않는 안전 자금
+  # 범위: 0.10 ~ 0.50 | 위험: Critical
+  reserve_ratio: 0.30
+
+  # 단일 코인 최대 투자 비율 (가용 투자금 대비)
+  # 범위: 0.05 ~ 0.40 | 위험: Caution
+  max_single_position: 0.20
+
+  # 동시 보유 가능 최대 코인 수
+  # 범위: 3 ~ 20 | 위험: Normal
+  max_concurrent_coins: 10
+
+  # 분할 매수 (DCA) 설정
+  dca:
+    # 분할 횟수 | 범위: 1 ~ 5 | 위험: Normal
+    phases: 3
+
+    # 1차 매수 비율 (배정금 대비) | 범위: 0.30 ~ 1.00
+    phase1_ratio: 0.40
+
+    # 2차 매수 트리거 (1차 매수가 대비 하락률) | 범위: -0.01 ~ -0.10
+    phase2_trigger: -0.02
+
+    # 3차 매수 트리거 (1차 매수가 대비 하락률) | 범위: -0.02 ~ -0.15
+    phase3_trigger: -0.05
+
+# ------------------------------------------------------------
+# 리스크 관리 (Risk Management)
+# 리스크 관리 에이전트 및 매매 실행 에이전트가 참조
+# ------------------------------------------------------------
+risk:
+  # 일일 최대 손실률 (도달 시 당일 신규 매매 중단)
+  # 범위: -0.01 ~ -0.10 | 위험: Critical
+  daily_loss_limit: -0.03
+
+  # 총 최대 손실률 (도달 시 전체 매매 중단 + 관리자 알림)
+  # 범위: -0.05 ~ -0.30 | 위험: Critical
+  total_loss_limit: -0.10
+
+  # 코인별 기본 손절률
+  # 범위: -0.02 ~ -0.15 | 위험: Caution
+  default_stop_loss: -0.05
+
+  # 트레일링 스탑 비율 (고점 대비 하락 시 자동 매도)
+  # 범위: 0.01 ~ 0.10 | 위험: Caution
+  trailing_stop: 0.03
+
+  # 연속 손실 허용 횟수 (초과 시 매매 일시 중단)
+  # 범위: 3 ~ 10 | 위험: Caution
+  max_consecutive_losses: 5
+
+  # 최대 허용 슬리피지
+  # 범위: 0.001 ~ 0.02 | 위험: Normal
+  slippage_tolerance: 0.005
+
+  # 서킷 브레이커
+  circuit_breaker:
+    # 급변 감지 기준 (1분 내 가격 변동률) | 범위: 0.05 ~ 0.20
+    price_spike: 0.10
+    # API 연속 실패 허용 횟수 | 범위: 2 ~ 10
+    api_failures: 3
+
+  # 리스크 레벨 경계값 (0 ~ 100)
+  levels:
+    low_max: 30        # Low 상한 | 범위: 20 ~ 40 | 위험: Caution
+    medium_max: 60     # Medium 상한 | 범위: 40 ~ 70 | 위험: Caution
+    high_max: 80       # High 상한 | 범위: 60 ~ 90 | 위험: Caution
+
+  # 리스크 레벨별 가용금 사용 비율
+  utilization:
+    low: 1.00          # Low 시 | 범위: 0.80 ~ 1.00
+    medium: 0.70       # Medium 시 | 범위: 0.50 ~ 0.90
+    high: 0.40         # High 시 | 범위: 0.20 ~ 0.60
+
+# ------------------------------------------------------------
+# 코인 선별 (Universe Screening)
+# 경제 분석 에이전트가 Watchlist 생성 시 참조
+# ------------------------------------------------------------
+screening:
+  # 시가총액 순위 기준 (Top N까지 대상)
+  # 범위: 20 ~ 500 | 위험: Normal
+  market_cap_rank: 100
+
+  # 최소 일평균 거래량 (USD)
+  # 범위: 1,000,000 ~ 100,000,000 | 위험: Normal
+  min_daily_volume: 10000000
+
+  # Watchlist 편입 최소 펀더멘탈 스코어 (0 ~ 100)
+  # 범위: 20 ~ 60 | 위험: Normal
+  min_fundamental_score: 40
+
+  # 토큰 언락 경고
+  unlock_warning:
+    days: 30           # 경고 기간 (일) | 범위: 7 ~ 90
+    ratio: 0.05        # 유통량 대비 언락 비율 | 범위: 0.02 ~ 0.15
+
+  # 매매 제외 코인 목록
+  blacklist: []
+
+  # 우선 감시 코인 (항상 Watchlist에 포함)
+  whitelist: []
+
+  # 타겟 거래소 | 위험: Caution
+  exchange: "binance"
+
+# ------------------------------------------------------------
+# 시그널 및 합의 (Signal & Consensus)
+# 퀀트 에이전트 및 오케스트레이터가 참조
+# ------------------------------------------------------------
+signal:
+  # 매수 시그널 발동 기준 스코어 (-100 ~ +100 중)
+  # 범위: 30 ~ 80 | 위험: Caution
+  buy_threshold: 50
+
+  # 매도 시그널 발동 기준 스코어
+  # 범위: -80 ~ -30 | 위험: Caution
+  sell_threshold: -50
+
+  # 합의 시 최소 코사인 유사도
+  # 범위: 0.40 ~ 0.80 | 위험: Caution
+  consensus_similarity_min: 0.60
+
+  # 합의 최소 찬성 수 (N-out-of-3)
+  # 범위: 2 ~ 3 | 위험: Critical
+  consensus_quorum: 2
+
+# ------------------------------------------------------------
+# 전략 (Strategies)
+# 퀀트 에이전트가 시그널 생성 시 참조
+# ------------------------------------------------------------
+strategy:
+  # 평균 회귀 (Mean Reversion)
+  mean_reversion:
+    enabled: true                      # 위험: Caution
+    rsi_oversold: 30                   # RSI 과매도 기준 | 범위: 15 ~ 40
+    rsi_overbought: 70                 # RSI 과매수 기준 | 범위: 60 ~ 85
+    weight:
+      rsi: 0.40
+      bollinger: 0.30
+      macd: 0.30
+
+  # 추세 추종 (Trend Following)
+  trend_following:
+    enabled: true                      # 위험: Caution
+    ma_short: 20                       # 단기 MA 기간 | 범위: 5 ~ 50
+    ma_long: 50                        # 장기 MA 기간 | 범위: 20 ~ 200
+    adx_min: 25                        # ADX 최소 추세 강도 | 범위: 15 ~ 40
+    weight:
+      ma: 0.35
+      adx: 0.35
+      volume: 0.30
+
+  # 모멘텀 (Momentum)
+  momentum:
+    enabled: true                      # 위험: Caution
+    price_spike_threshold: 0.03        # 급등 감지 기준 (5분) | 범위: 0.02 ~ 0.10
+    volume_spike_multiplier: 5         # 거래량 급증 배수 | 범위: 3 ~ 10
+    weight:
+      price: 0.40
+      volume: 0.40
+      rsi: 0.20
+
+  # 브레이크아웃 (Breakout)
+  breakout:
+    enabled: true                      # 위험: Caution
+    lookback_days: 20                  # 채널 돌파 기준 기간 | 범위: 10 ~ 60
+    weight:
+      breakout_strength: 0.40
+      atr: 0.30
+      volume: 0.30
+
+# ------------------------------------------------------------
+# 포트폴리오 관리 (Portfolio Management)
+# 포트폴리오 관리 에이전트가 참조
+# ------------------------------------------------------------
+portfolio:
+  # 보유 기간 유형별 목표 비중 (합계 1.0)
+  allocation:
+    short_term: 0.25   # 단기 (1~7일) | 범위: 0.10 ~ 0.40
+    mid_term: 0.45     # 중기 (1~4주) | 범위: 0.30 ~ 0.60
+    long_term: 0.30    # 장기 (1개월+) | 범위: 0.10 ~ 0.40
+
+  # 포트폴리오 내 코인 간 최대 상관계수
+  # 범위: 0.50 ~ 0.95 | 위험: Normal
+  max_correlation: 0.80
+
+  # 보유 기간 유형별 최대 보유일
+  max_holding_days:
+    short_term: 7      # 범위: 1 ~ 14
+    mid_term: 28        # 범위: 7 ~ 60
+
+  # 일일 리밸런싱 시각 (UTC)
+  rebalance_time: "00:00"
+
+  # 보유 기간 연장 조건
+  extend_conditions:
+    min_pnl: 0.00                # 최소 수익률 (손실 중이면 연장 불가) | 범위: -0.02 ~ 0.05
+    min_fundamental_score: 70    # 최소 펀더멘탈 스코어 | 범위: 40 ~ 90
+    max_risk_level: 60           # 허용 최대 리스크 레벨 | 범위: 30 ~ 80
+
+# ------------------------------------------------------------
+# 스캔 주기 (Scan Schedule)
+# 각 에이전트의 동작 주기
+# ------------------------------------------------------------
+schedule:
+  # 퀀트 에이전트
+  quant:
+    fast_scan_minutes: 15          # 빠른 스캔 주기 | 범위: 5 ~ 60
+    deep_scan_minutes: 60          # 깊은 분석 주기 | 범위: 30 ~ 240
+    strategy_eval_minutes: 240     # 전략 평가 주기 | 범위: 60 ~ 480
+
+  # 경제 분석 에이전트
+  analyst:
+    news_crawl_minutes: 60         # 뉴스 크롤링 주기 | 범위: 15 ~ 240
+    macro_update_minutes: 240      # 거시 환경 업데이트 | 범위: 60 ~ 480
+    universe_update_time: "00:00"  # Watchlist 갱신 시각 (UTC)
+
+  # 리스크 관리 에이전트
+  risk:
+    position_poll_seconds: 10      # 포지션 손익 감시 간격 | 범위: 5 ~ 60 | 위험: Caution
+    full_eval_time: "00:00"        # 전체 재산출 시각 (UTC)
+
+  # 포트폴리오 관리 에이전트
+  portfolio:
+    report_time: "09:00"           # 성과 리포트 발송 시각 (UTC)
+
+  # 매매 실행 에이전트
+  execution:
+    order_poll_seconds: 30         # 미체결 주문 상태 폴링 | 범위: 10 ~ 120
+
+  # OMS
+  oms:
+    reconciliation_seconds: 300    # 거래소 상태 동기화 주기 | 범위: 60 ~ 600
+
+# ------------------------------------------------------------
+# 이벤트 트리거 (Event Triggers)
+# 이벤트 기반 즉시 동작의 임계값
+# ------------------------------------------------------------
+event:
+  # 급등/급락 감지
+  price_spike:
+    window_minutes: 5              # 감지 시간 창 | 범위: 1 ~ 15
+    threshold: 0.03                # 변동률 기준 | 범위: 0.02 ~ 0.10
+
+  # 대량 거래 감지 (평균 거래량 대비 배수)
+  volume_spike_multiplier: 5       # 범위: 3 ~ 20
+
+  # Fear & Greed Index 극단값
+  fear_greed:
+    extreme_fear: 20               # 극단 공포 | 범위: 10 ~ 30 | 위험: Caution
+    extreme_greed: 80              # 극단 탐욕 | 범위: 70 ~ 90 | 위험: Caution
+
+# ------------------------------------------------------------
+# 매매 실행 (Execution)
+# 매매 실행 에이전트가 참조
+# ------------------------------------------------------------
+execution:
+  # 기본 주문 유형 | 위험: Normal
+  default_order_type: "limit"      # limit | market
+
+  # 지정가 미체결 시 취소까지 대기 시간 (초)
+  # 범위: 60 ~ 3600 | 위험: Normal
+  limit_order_timeout: 300
+
+  # 대량 주문 기준 (이상이면 TWAP/VWAP 적용, USD)
+  # 범위: 10,000 ~ 500,000 | 위험: Normal
+  large_order_threshold: 50000
+
+  # TWAP 설정
+  twap:
+    intervals: 5                   # 분할 횟수 | 범위: 3 ~ 20
+    interval_seconds: 60           # 분할 간격 (초) | 범위: 30 ~ 300
+
+# ------------------------------------------------------------
+# 알림 (Notifications)
+# 관리자 알림 설정
+# ------------------------------------------------------------
+notification:
+  # 알림 발송 채널
+  channel: "openclaw"              # openclaw | none
+
+  # 최소 알림 레벨
+  min_level: "warning"             # info | warning | critical
+
+  # 항목별 알림 ON/OFF
+  events:
+    trade_executed: true           # 매매 체결 시
+    daily_report: true             # 일일 성과 리포트
+    risk_level_change: true        # 리스크 레벨 변경 시
+    circuit_breaker: true          # 서킷 브레이커 발동 시
+    stop_loss_triggered: true      # 손절 발동 시
+    config_changed: true           # 설정 변경 시 (Critical만)
+    system_error: true             # 시스템 에러 발생 시
+
+# ------------------------------------------------------------
+# 시스템 전체 제어 (System Control)
+# ------------------------------------------------------------
+system:
+  # 매매 전체 ON/OFF | 위험: Critical
+  trading_enabled: true
+
+  # Paper Trading 모드 (가상 체결) | 위험: Critical
+  paper_trading_mode: false
+
+  # 유지보수 모드 (데이터 수집만 동작) | 위험: Caution
+  maintenance_mode: false
+
+# ------------------------------------------------------------
+# 프리셋 (Presets)
+# 빈번한 설정 조합을 프리셋으로 정의
+# OpenClaw: "보수적으로 설정해줘" → conservative 프리셋 적용
+# ------------------------------------------------------------
+presets:
+  conservative:
+    fund.reserve_ratio: 0.40
+    fund.max_single_position: 0.10
+    fund.max_concurrent_coins: 5
+    risk.default_stop_loss: -0.03
+    risk.trailing_stop: 0.02
+    signal.buy_threshold: 70
+    signal.consensus_similarity_min: 0.75
+
+  balanced:
+    # 모든 값 기본값 사용 (이 프리셋은 default.yml 자체)
+    _use_defaults: true
+
+  aggressive:
+    fund.reserve_ratio: 0.20
+    fund.max_single_position: 0.30
+    fund.max_concurrent_coins: 15
+    risk.default_stop_loss: -0.07
+    risk.trailing_stop: 0.05
+    signal.buy_threshold: 40
+    signal.consensus_similarity_min: 0.50
+
+  crisis:
+    fund.reserve_ratio: 0.50
+    fund.max_single_position: 0.10
+    fund.max_concurrent_coins: 3
+    risk.default_stop_loss: -0.02
+    risk.trailing_stop: 0.015
+    signal.buy_threshold: 80
+    signal.consensus_similarity_min: 0.80
+    schedule.quant.fast_scan_minutes: 30
