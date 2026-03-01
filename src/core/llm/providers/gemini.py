@@ -9,12 +9,14 @@ from google import genai
 from google.genai import types
 
 from src.core.config import LLMRetryConfig
-from src.core.llm.client import LLMResponse, Message, Role
+from src.core.llm.client import EmbeddingResult, LLMResponse, Message, Role
 from src.core.llm.providers.base import BaseLLMProvider, LLMProviderError
 
 
 class GeminiProvider(BaseLLMProvider):
     """Google Gemini API 기반 LLM 프로바이더."""
+
+    _default_embed_model: str = "text-embedding-004"
 
     def __init__(
         self,
@@ -115,6 +117,22 @@ class GeminiProvider(BaseLLMProvider):
             ):
                 if chunk.text:
                     yield chunk.text
+        except Exception as e:
+            raise LLMProviderError(self.provider_name, str(e), retryable=True) from e
+
+    async def _do_embed(self, text: str, *, model: str) -> EmbeddingResult:
+        try:
+            response = await self._client.aio.models.embed_content(
+                model=model,
+                contents=text,
+            )
+            vector = list(response.embeddings[0].values)
+            return EmbeddingResult(
+                vector=vector,
+                model=model,
+                provider=self.provider_name,
+                dimensions=len(vector),
+            )
         except Exception as e:
             raise LLMProviderError(self.provider_name, str(e), retryable=True) from e
 

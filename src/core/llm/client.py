@@ -41,6 +41,17 @@ class LLMResponse:
 
 
 @dataclass
+class EmbeddingResult:
+    """텍스트 임베딩 결과 (RAG/pgvector 용)."""
+    vector: list[float]
+    model: str
+    provider: str
+    dimensions: int = 0
+    input_tokens: int = 0
+    latency_ms: float = 0.0
+
+
+@dataclass
 class AnalysisResult:
     """에이전트 분석 결과."""
     content: str
@@ -75,6 +86,15 @@ class LLMClient(ABC):
         model: str | None = None,
     ) -> AnalysisResult:
         """단일 프롬프트 기반 분석 (에이전트 편의 메서드)."""
+
+    @abstractmethod
+    async def embed(
+        self,
+        text: str,
+        *,
+        model: str | None = None,
+    ) -> EmbeddingResult:
+        """텍스트 → 벡터 임베딩 (RAG/pgvector 파이프라인 용)."""
 
     @abstractmethod
     async def stream(

@@ -8,12 +8,14 @@ from typing import AsyncIterator
 import openai
 
 from src.core.config import LLMRetryConfig
-from src.core.llm.client import LLMResponse, Message, Role
+from src.core.llm.client import EmbeddingResult, LLMResponse, Message, Role
 from src.core.llm.providers.base import BaseLLMProvider, LLMProviderError
 
 
 class OpenAIProvider(BaseLLMProvider):
     """OpenAI API 기반 LLM 프로바이더."""
+
+    _default_embed_model: str = "text-embedding-3-small"
 
     def __init__(
         self,
@@ -95,6 +97,23 @@ class OpenAIProvider(BaseLLMProvider):
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
+        except openai.APIError as e:
+            raise LLMProviderError(self.provider_name, str(e), retryable=True) from e
+
+    async def _do_embed(self, text: str, *, model: str) -> EmbeddingResult:
+        try:
+            response = await self._client.embeddings.create(
+                model=model,
+                input=text,
+            )
+            vector = response.data[0].embedding
+            return EmbeddingResult(
+                vector=vector,
+                model=model,
+                provider=self.provider_name,
+                dimensions=len(vector),
+                input_tokens=response.usage.prompt_tokens if response.usage else 0,
+            )
         except openai.APIError as e:
             raise LLMProviderError(self.provider_name, str(e), retryable=True) from e
 

@@ -10,7 +10,7 @@ import logging
 import time
 
 from src.core.config import LLMFallbackConfig
-from src.core.llm.client import LLMClient, LLMResponse, Message
+from src.core.llm.client import EmbeddingResult, LLMClient, LLMResponse, Message
 from src.core.llm.providers.base import LLMProviderError
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,26 @@ class FallbackManager:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
+            raise
+
+    async def embed(
+        self,
+        text: str,
+        *,
+        model: str | None = None,
+    ) -> EmbeddingResult:
+        """폴백 체인을 포함한 임베딩 호출."""
+        try:
+            result = await self.active_provider.embed(text, model=model)
+            self._on_success()
+            return result
+        except (LLMProviderError, NotImplementedError):
+            self._on_failure()
+            if self._fallback and self._should_fallback():
+                self._using_fallback = True
+                self._fallback_since = time.time()
+                self._consecutive_failures = 0
+                return await self._fallback.embed(text, model=model)
             raise
 
     def _on_success(self) -> None:

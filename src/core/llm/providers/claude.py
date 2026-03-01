@@ -8,7 +8,7 @@ from typing import AsyncIterator
 import anthropic
 
 from src.core.config import LLMRetryConfig
-from src.core.llm.client import LLMResponse, Message, Role
+from src.core.llm.client import EmbeddingResult, LLMResponse, Message, Role
 from src.core.llm.providers.base import BaseLLMProvider, LLMProviderError
 
 

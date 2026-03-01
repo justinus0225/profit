@@ -13,6 +13,7 @@ from typing import AsyncIterator
 from src.core.config import LLMRetryConfig
 from src.core.llm.client import (
     AnalysisResult,
+    EmbeddingResult,
     LLMClient,
     LLMResponse,
     Message,
@@ -37,6 +38,8 @@ class BaseLLMProvider(LLMClient):
     각 프로바이더(Claude, Gemini, OpenAI)는 이 클래스를 상속하고
     _do_chat(), _do_stream() 만 구현하면 된다.
     """
+
+    _default_embed_model: str = ""  # 각 프로바이더 서브클래스에서 설정
 
     def __init__(
         self,
@@ -87,6 +90,18 @@ class BaseLLMProvider(LLMClient):
             content=response.content,
             response=response,
         )
+
+    async def embed(
+        self,
+        text: str,
+        *,
+        model: str | None = None,
+    ) -> EmbeddingResult:
+        resolved_model = model or self._default_embed_model
+        start = time.monotonic()
+        result = await self._do_embed(text, model=resolved_model)
+        result.latency_ms = (time.monotonic() - start) * 1000
+        return result
 
     async def stream(
         self,
@@ -161,6 +176,11 @@ class BaseLLMProvider(LLMClient):
         max_tokens: int,
     ) -> LLMResponse:
         raise NotImplementedError
+
+    async def _do_embed(self, text: str, *, model: str) -> EmbeddingResult:
+        raise NotImplementedError(
+            f"{self.provider_name} does not support embeddings"
+        )
 
     async def _do_stream(
         self,
