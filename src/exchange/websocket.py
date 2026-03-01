@@ -17,6 +17,7 @@ from typing import Any, Callable, Coroutine
 
 import ccxt.pro as ccxt_pro
 
+from src.core.config import EventConfig, ExchangeConfig
 from src.exchange.models import Ticker
 
 logger = logging.getLogger(__name__)
@@ -59,15 +60,26 @@ class WebSocketManager:
 
     def __init__(
         self,
+        exchange_config: ExchangeConfig | None = None,
+        event_config: EventConfig | None = None,
+        *,
         exchange_id: str = "binance",
         price_spike_threshold: float = 0.03,
         price_spike_window_minutes: int = 5,
         paper_trading: bool = False,
     ) -> None:
-        self._exchange_id = exchange_id
-        self._spike_threshold = price_spike_threshold
-        self._spike_window = price_spike_window_minutes
-        self._paper_trading = paper_trading
+        if exchange_config:
+            self._exchange_id = exchange_config.exchange_id
+            self._paper_trading = exchange_config.paper_trading
+        else:
+            self._exchange_id = exchange_id
+            self._paper_trading = paper_trading
+        if event_config:
+            self._spike_threshold = event_config.price_spike.threshold
+            self._spike_window = event_config.price_spike.window_minutes
+        else:
+            self._spike_threshold = price_spike_threshold
+            self._spike_window = price_spike_window_minutes
         self._exchange: ccxt_pro.Exchange | None = None
         self._running = False
         self._symbols: list[str] = []

@@ -32,6 +32,33 @@ class OrderState(str, Enum):
     ERROR = "ERROR"
 
 
+# 허용된 상태 전이 맵 (TRADING_FLOW.md)
+VALID_TRANSITIONS: dict[OrderState, set[OrderState]] = {
+    OrderState.CREATED: {OrderState.SUBMITTED, OrderState.REJECTED, OrderState.ERROR},
+    OrderState.SUBMITTED: {
+        OrderState.PARTIALLY_FILLED,
+        OrderState.FILLED,
+        OrderState.CANCELLED,
+        OrderState.REJECTED,
+        OrderState.ERROR,
+    },
+    OrderState.PARTIALLY_FILLED: {
+        OrderState.PARTIALLY_FILLED,
+        OrderState.FILLED,
+        OrderState.CANCELLED,
+        OrderState.ERROR,
+    },
+    OrderState.FILLED: set(),  # 종료 상태
+    OrderState.CANCELLED: set(),  # 종료 상태
+    OrderState.REJECTED: set(),  # 종료 상태
+    OrderState.ERROR: set(),  # 종료 상태
+}
+
+
+class InvalidOrderTransition(ValueError):
+    """유효하지 않은 주문 상태 전이."""
+
+
 class Order(UUIDPrimaryKeyMixin, Base):
     """주문 테이블 - OMS 상태 머신 + 멱등성 키."""
 
@@ -88,3 +115,17 @@ class Order(UUIDPrimaryKeyMixin, Base):
     # 관계
     coin: Mapped["Coin"] = relationship(back_populates="orders")  # noqa: F821
     trades: Mapped[list["Trade"]] = relationship(back_populates="order")  # noqa: F821
+
+    def transition_to(self, new_state: OrderState) -> None:
+        """상태 전이 검증 후 상태를 변경한다.
+
+        TRADING_FLOW.md에 정의된 유효 전이만 허용한다.
+        종료 상태(FILLED, CANCELLED, REJECTED, ERROR)에서는 전이 불가.
+        """
+        current = OrderState(self.state)
+        allowed = VALID_TRANSITIONS.get(current, set())
+        if new_state not in allowed:
+            raise InvalidOrderTransition(
+                f"Cannot transition from {current.value} to {new_state.value}"
+            )
+        self.state = new_state.value

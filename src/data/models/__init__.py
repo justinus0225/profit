@@ -12,7 +12,7 @@ from src.data.models.config_change import ConfigChange
 from src.data.models.data_quarantine import DataQuarantine
 from src.data.models.market_data import MarketData
 from src.data.models.memory import AgentMemoryEmbedding
-from src.data.models.order import Order, OrderState
+from src.data.models.order import InvalidOrderTransition, Order, OrderState, VALID_TRANSITIONS
 from src.data.models.position import Position
 from src.data.models.signal import Signal
 from src.data.models.trade import Trade
@@ -28,8 +28,10 @@ __all__ = [
     "ConfigChange",
     "DataQuarantine",
     "MarketData",
+    "InvalidOrderTransition",
     "Order",
     "OrderState",
+    "VALID_TRANSITIONS",
     "Position",
     "Signal",
     "TimestampMixin",

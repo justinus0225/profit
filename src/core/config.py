@@ -289,6 +289,8 @@ class RateLimitConfig(BaseModel):
 
 
 class ExchangeConfig(BaseModel):
+    exchange_id: str = Field(default="binance")
+    paper_trading: bool = Field(default=False)
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
 
 

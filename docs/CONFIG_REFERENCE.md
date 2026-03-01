@@ -285,11 +285,13 @@
 |----|------|--------|------|----------|------|
 | `notification.channel` | 알림 발송 채널 | `"openclaw"` | openclaw, none | Normal | 문자열 |
 | `notification.min_level` | 최소 알림 레벨 | `"warning"` | info, warning, critical | Normal | 문자열 |
-| `notification.trade_executed` | 매매 체결 시 알림 | `true` | true/false | Normal | bool |
-| `notification.daily_report` | 일일 성과 리포트 발송 | `true` | true/false | Normal | bool |
-| `notification.risk_level_change` | 리스크 레벨 변경 시 알림 | `true` | true/false | Normal | bool |
-| `notification.circuit_breaker` | 서킷 브레이커 발동 시 알림 | `true` | true/false | Normal | bool |
-| `notification.stop_loss_triggered` | 손절 발동 시 알림 | `true` | true/false | Normal | bool |
+| `notification.events.trade_executed` | 매매 체결 시 알림 | `true` | true/false | Normal | bool |
+| `notification.events.daily_report` | 일일 성과 리포트 발송 | `true` | true/false | Normal | bool |
+| `notification.events.risk_level_change` | 리스크 레벨 변경 시 알림 | `true` | true/false | Normal | bool |
+| `notification.events.circuit_breaker` | 서킷 브레이커 발동 시 알림 | `true` | true/false | Normal | bool |
+| `notification.events.stop_loss_triggered` | 손절 발동 시 알림 | `true` | true/false | Normal | bool |
+| `notification.events.config_changed` | 설정 변경 시 알림 | `true` | true/false | Normal | bool |
+| `notification.events.system_error` | 시스템 오류 발생 시 알림 | `true` | true/false | Normal | bool |
 
 ---
 
@@ -488,21 +490,21 @@ Token Bucket 알고리즘 기반으로 API 호출 예산을 관리한다.
 
 ---
 
-## 2.15. LLM 메모리 (`llm.memory.*`)
+## 2.15. LLM 메모리 (`llm_memory.*`)
 
 에이전트의 단기/장기 메모리 관리 및 프롬프트 조합 시 토큰 제한 설정.
-Section 10.7(ARCHITECTURE.md) 참조.
+Section 10.7(ARCHITECTURE.md) 참조. 최상위 설정 섹션으로 `llm.*` 하위가 아닌 `llm_memory.*`로 독립 관리된다.
 
 | 키 | 설명 | 기본값 | 범위 | 위험등급 |
 |----|------|--------|------|----------|
-| `llm.memory.short_term_ttl_hours` | 단기 메모리(Redis) TTL (시간) | `24` | 1~168 | Normal |
-| `llm.memory.short_term_max_entries` | 에이전트당 단기 메모리 최대 항목 수 | `50` | 10~200 | Normal |
-| `llm.memory.rag_enabled` | RAG (장기 메모리 검색) 활성화 여부 | `true` | true/false | Caution |
-| `llm.memory.rag_top_k` | RAG 검색 시 반환할 최대 결과 수 | `5` | 1~20 | Normal |
-| `llm.memory.rag_similarity_threshold` | RAG 유사도 최소 임계값 (코사인 유사도) | `0.70` | 0.50~0.95 | Normal |
-| `llm.memory.compression_enabled` | 프롬프트 초과 시 자동 압축 활성화 | `true` | true/false | Caution |
-| `llm.memory.compression_model` | 압축(요약)에 사용할 경량 모델 | `"claude-haiku-4-5"` | 경량 모델 ID | Normal |
-| `llm.memory.embedding_dimension` | 임베딩 벡터 차원 수 (pgvector) | `768` | 256~1536 | Caution |
+| `llm_memory.short_term_ttl_hours` | 단기 메모리(Redis) TTL (시간) | `24` | 1~168 | Normal |
+| `llm_memory.short_term_max_entries` | 에이전트당 단기 메모리 최대 항목 수 | `50` | 10~200 | Normal |
+| `llm_memory.rag_enabled` | RAG (장기 메모리 검색) 활성화 여부 | `true` | true/false | Caution |
+| `llm_memory.rag_top_k` | RAG 검색 시 반환할 최대 결과 수 | `5` | 1~20 | Normal |
+| `llm_memory.rag_similarity_threshold` | RAG 유사도 최소 임계값 (코사인 유사도) | `0.70` | 0.50~0.95 | Normal |
+| `llm_memory.compression_enabled` | 프롬프트 초과 시 자동 압축 활성화 | `true` | true/false | Caution |
+| `llm_memory.compression_model` | 압축(요약)에 사용할 경량 모델 | `"claude-haiku-4-5"` | 경량 모델 ID | Normal |
+| `llm_memory.embedding_dimension` | 임베딩 벡터 차원 수 (pgvector) | `768` | 256~1536 | Caution |
 
 ---
 
@@ -753,7 +755,7 @@ OpenClaw 조회:
 | API Rate Limiting (`exchange.rate_limit.*`) | 9 | API 가중치 예산, 에이전트 우선순위, 백프레셔 |
 | 동시성 제어 (`concurrency.*`) | 5 | 분산 락 TTL, 재시도 설정 |
 | 데이터 품질 (`data_quality.*`) | 7 | 이상치 탐지, 힐링, 격리 |
-| LLM 메모리 (`llm.memory.*`) | 8 | 단기/장기 메모리, RAG, 압축 |
+| LLM 메모리 (`llm_memory.*`) | 8 | 단기/장기 메모리, RAG, 압축 |
 | 부트 시퀀스 (`boot.*`) | 6 | 백필 배수, 워밍업 타임아웃, 자동 활성화 |
 | DB 커넥션 풀링 (`db.pool.*`) | 12 | PgBouncer, SQLAlchemy 풀, 헬스체크 |
 | **합계** | **146** | |
