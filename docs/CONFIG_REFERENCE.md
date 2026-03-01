@@ -471,6 +471,77 @@ Token Bucket 알고리즘 기반으로 API 호출 예산을 관리한다.
 | `concurrency.lock_retry_attempts` | 락 획득 실패 시 재시도 횟수 | `3` | 1~10 | Normal |
 | `concurrency.lock_retry_delay_ms` | 락 재시도 간격 (밀리초) | `100` | 50~1000 | Normal |
 
+## 2.14. 데이터 품질 (`data_quality.*`)
+
+거래소에서 수집한 데이터의 이상치(스파이크, 결측, 지연)를 탐지하고
+자동 힐링(보간/대체)하여 정제된 데이터만 지표 계산에 유입시키는 설정값.
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `data_quality.zscore_threshold` | Z-Score 이상치 판정 임계값. \|z\| > threshold 시 이상치 | `4.0` | 2.0~10.0 | Caution |
+| `data_quality.iqr_multiplier` | IQR 기반 이상치 판정 배수. Q1 - k×IQR ~ Q3 + k×IQR | `3.0` | 1.5~5.0 | Caution |
+| `data_quality.window_size` | 이상치 탐지 슬라이딩 윈도우 크기 (데이터 포인트 수) | `100` | 20~500 | Normal |
+| `data_quality.healing_method` | 기본 힐링 방법 | `"linear_interpolation"` | linear_interpolation, forward_fill, ma_replacement | Normal |
+| `data_quality.anomaly_halt_ratio` | 이상치 비율 이 값 초과 시 해당 심볼 수집 자동 중단 | `0.30` | 0.10~0.80 | Caution |
+| `data_quality.anomaly_halt_window_minutes` | 이상치 비율 측정 윈도우 (분) | `10` | 5~60 | Normal |
+| `data_quality.quarantine_enabled` | 이상치 원본을 격리 테이블에 보관 여부 | `true` | true/false | Normal |
+
+---
+
+## 2.15. LLM 메모리 (`llm.memory.*`)
+
+에이전트의 단기/장기 메모리 관리 및 프롬프트 조합 시 토큰 제한 설정.
+Section 10.7(ARCHITECTURE.md) 참조.
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `llm.memory.short_term_ttl_hours` | 단기 메모리(Redis) TTL (시간) | `24` | 1~168 | Normal |
+| `llm.memory.short_term_max_entries` | 에이전트당 단기 메모리 최대 항목 수 | `50` | 10~200 | Normal |
+| `llm.memory.rag_enabled` | RAG (장기 메모리 검색) 활성화 여부 | `true` | true/false | Caution |
+| `llm.memory.rag_top_k` | RAG 검색 시 반환할 최대 결과 수 | `5` | 1~20 | Normal |
+| `llm.memory.rag_similarity_threshold` | RAG 유사도 최소 임계값 (코사인 유사도) | `0.70` | 0.50~0.95 | Normal |
+| `llm.memory.compression_enabled` | 프롬프트 초과 시 자동 압축 활성화 | `true` | true/false | Caution |
+| `llm.memory.compression_model` | 압축(요약)에 사용할 경량 모델 | `"claude-haiku-4-5"` | 경량 모델 ID | Normal |
+| `llm.memory.embedding_dimension` | 임베딩 벡터 차원 수 (pgvector) | `768` | 256~1536 | Caution |
+
+---
+
+## 2.16. 부트 시퀀스 (`boot.*`)
+
+시스템 콜드 스타트 시 6단계 부트 시퀀스의 동작을 제어하는 설정값.
+P12(ARCHITECTURE.md) 및 TRADING_FLOW.md Section 9.1 참조.
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `boot.candle_backfill_multiplier` | 지표별 최소 필요 캔들의 N배만큼 백필 | `1.5` | 1.0~5.0 | Caution |
+| `boot.warmup_timeout_minutes` | 전체 워밍업 타임아웃 (분). 초과 시 알림 | `30` | 10~120 | Caution |
+| `boot.partial_activation` | 준비된 지표의 전략만 선 활성화 허용 | `true` | true/false | Caution |
+| `boot.auto_enable_trading` | 워밍업 완료 후 trading_enabled 자동 활성화 | `true` | true/false | Critical |
+| `boot.infra_retry_attempts` | Phase 0 인프라 점검 재시도 횟수 | `3` | 1~10 | Normal |
+| `boot.infra_retry_delay_seconds` | Phase 0 인프라 점검 재시도 간격 (초) | `5` | 1~30 | Normal |
+
+---
+
+## 2.17. DB 커넥션 풀링 (`db.pool.*`)
+
+PgBouncer 및 SQLAlchemy 커넥션 풀 설정.
+P13(ARCHITECTURE.md) 참조.
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `db.pool.pgbouncer_host` | PgBouncer 호스트 | `"pgbouncer"` | 문자열 | Normal |
+| `db.pool.pgbouncer_port` | PgBouncer 포트 | `6432` | 1024~65535 | Normal |
+| `db.pool.pool_mode` | PgBouncer 풀링 모드 | `"transaction"` | session, transaction, statement | Caution |
+| `db.pool.default_pool_size` | PgBouncer 기본 DB 연결 풀 크기 | `20` | 5~100 | Caution |
+| `db.pool.max_client_conn` | PgBouncer 최대 클라이언트 연결 수 | `200` | 50~500 | Caution |
+| `db.pool.reserve_pool_size` | PgBouncer 예비 연결 풀 크기 | `5` | 0~20 | Normal |
+| `db.pool.sqlalchemy_pool_size` | SQLAlchemy 기본 풀 크기 (에이전트당) | `2` | 1~10 | Caution |
+| `db.pool.sqlalchemy_max_overflow` | SQLAlchemy 최대 오버플로우 연결 수 | `3` | 0~20 | Caution |
+| `db.pool.sqlalchemy_pool_timeout` | SQLAlchemy 풀 연결 대기 타임아웃 (초) | `30` | 5~120 | Normal |
+| `db.pool.sqlalchemy_pool_recycle` | SQLAlchemy 연결 재활용 주기 (초) | `3600` | 300~7200 | Normal |
+| `db.pool.postgres_max_connections` | PostgreSQL max_connections (PgBouncer 경유) | `50` | 20~200 | Caution |
+| `db.pool.health_check_interval` | 커넥션 풀 헬스체크 주기 (초) | `30` | 10~300 | Normal |
+
 ---
 
 # 3. OpenClaw 설정 변경 명령어
@@ -681,4 +752,8 @@ OpenClaw 조회:
 | LLM 프로바이더 (`llm.*`) | 14 | 프로바이더, 모델, 폴백, 에이전트별 오버라이드, 비용 한도 |
 | API Rate Limiting (`exchange.rate_limit.*`) | 9 | API 가중치 예산, 에이전트 우선순위, 백프레셔 |
 | 동시성 제어 (`concurrency.*`) | 5 | 분산 락 TTL, 재시도 설정 |
-| **합계** | **113** | |
+| 데이터 품질 (`data_quality.*`) | 7 | 이상치 탐지, 힐링, 격리 |
+| LLM 메모리 (`llm.memory.*`) | 8 | 단기/장기 메모리, RAG, 압축 |
+| 부트 시퀀스 (`boot.*`) | 6 | 백필 배수, 워밍업 타임아웃, 자동 활성화 |
+| DB 커넥션 풀링 (`db.pool.*`) | 12 | PgBouncer, SQLAlchemy 풀, 헬스체크 |
+| **합계** | **146** | |

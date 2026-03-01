@@ -429,6 +429,172 @@ system:
   maintenance_mode: false
 
 # ------------------------------------------------------------
+# 데이터 품질 (Data Quality)
+# 거래소 수집 데이터의 이상치 탐지 및 힐링 파이프라인 설정
+# 참조: ARCHITECTURE.md P10
+# ------------------------------------------------------------
+data_quality:
+  # Z-Score 이상치 판정 임계값 (|z| > threshold → 이상치)
+  # 범위: 2.0 ~ 10.0 | 위험: Caution
+  zscore_threshold: 4.0
+
+  # IQR 기반 이상치 판정 배수 (Q1 - k×IQR ~ Q3 + k×IQR)
+  # 범위: 1.5 ~ 5.0 | 위험: Caution
+  iqr_multiplier: 3.0
+
+  # 이상치 탐지 슬라이딩 윈도우 크기 (데이터 포인트 수)
+  # 범위: 20 ~ 500 | 위험: Normal
+  window_size: 100
+
+  # 기본 힐링 방법
+  # 옵션: linear_interpolation | forward_fill | ma_replacement
+  # 위험: Normal
+  healing_method: "linear_interpolation"
+
+  # 이상치 비율 임계값 (이 값 초과 시 해당 심볼 수집 자동 중단)
+  # 범위: 0.10 ~ 0.80 | 위험: Caution
+  anomaly_halt_ratio: 0.30
+
+  # 이상치 비율 측정 윈도우 (분)
+  # 범위: 5 ~ 60 | 위험: Normal
+  anomaly_halt_window_minutes: 10
+
+  # 이상치 원본을 격리 테이블(data_quarantine)에 보관 여부
+  # 위험: Normal
+  quarantine_enabled: true
+
+# ------------------------------------------------------------
+# LLM 메모리 (LLM Memory)
+# 에이전트 단기/장기 메모리 및 프롬프트 조합 설정
+# 참조: ARCHITECTURE.md Section 10.7, P11
+# ------------------------------------------------------------
+# llm.memory 블록은 llm 섹션 하위에 추가
+# (llm 섹션은 위에서 정의됨)
+llm_memory:
+  # 단기 메모리(Redis) TTL (시간) | 범위: 1 ~ 168 | 위험: Normal
+  short_term_ttl_hours: 24
+
+  # 에이전트당 단기 메모리 최대 항목 수 | 범위: 10 ~ 200 | 위험: Normal
+  short_term_max_entries: 50
+
+  # RAG (장기 메모리 검색) 활성화 여부 | 위험: Caution
+  rag_enabled: true
+
+  # RAG 검색 시 반환할 최대 결과 수 | 범위: 1 ~ 20 | 위험: Normal
+  rag_top_k: 5
+
+  # RAG 유사도 최소 임계값 (코사인 유사도) | 범위: 0.50 ~ 0.95 | 위험: Normal
+  rag_similarity_threshold: 0.70
+
+  # 프롬프트 초과 시 자동 압축 활성화 | 위험: Caution
+  compression_enabled: true
+
+  # 압축(요약)에 사용할 경량 모델 | 위험: Normal
+  compression_model: "claude-haiku-4-5"
+
+  # 임베딩 벡터 차원 수 (pgvector) | 범위: 256 ~ 1536 | 위험: Caution
+  embedding_dimension: 768
+
+  # 에이전트별 최대 입력 토큰 제한
+  agent_max_input_tokens:
+    orchestrator: 16384
+    analyst_macro: 8192
+    analyst_micro: 8192
+    quant: 8192
+    risk: 4096
+    portfolio: 4096
+    executor: 2048
+    analyst_sentiment: 2048
+
+# ------------------------------------------------------------
+# 부트 시퀀스 (Boot Sequence)
+# 콜드 스타트 시 6단계 부트 시퀀스 설정
+# 참조: ARCHITECTURE.md P12, TRADING_FLOW.md Section 9.1
+# ------------------------------------------------------------
+boot:
+  # 지표별 최소 필요 캔들의 N배만큼 백필
+  # 범위: 1.0 ~ 5.0 | 위험: Caution
+  candle_backfill_multiplier: 1.5
+
+  # 전체 워밍업 타임아웃 (분). 초과 시 알림 발송
+  # 범위: 10 ~ 120 | 위험: Caution
+  warmup_timeout_minutes: 30
+
+  # 준비된 지표의 전략만 선 활성화 허용
+  # false 시 모든 지표 준비 완료까지 매매 중단
+  # 위험: Caution
+  partial_activation: true
+
+  # 워밍업 완료 후 trading_enabled 자동 활성화
+  # false 시 관리자 수동 활성화 필요
+  # 위험: Critical
+  auto_enable_trading: true
+
+  # Phase 0 인프라 점검 재시도 횟수 | 범위: 1 ~ 10 | 위험: Normal
+  infra_retry_attempts: 3
+
+  # Phase 0 인프라 점검 재시도 간격 (초) | 범위: 1 ~ 30 | 위험: Normal
+  infra_retry_delay_seconds: 5
+
+# ------------------------------------------------------------
+# DB 커넥션 풀링 (DB Connection Pooling)
+# PgBouncer 및 SQLAlchemy 커넥션 풀 설정
+# 참조: ARCHITECTURE.md P13
+# ------------------------------------------------------------
+db:
+  pool:
+    # PgBouncer 접속 정보
+    pgbouncer_host: "pgbouncer"
+    pgbouncer_port: 6432
+
+    # PgBouncer 풀링 모드 | 옵션: session, transaction, statement | 위험: Caution
+    pool_mode: "transaction"
+
+    # PgBouncer 기본 DB 연결 풀 크기 | 범위: 5 ~ 100 | 위험: Caution
+    default_pool_size: 20
+
+    # PgBouncer 최대 클라이언트 연결 수 | 범위: 50 ~ 500 | 위험: Caution
+    max_client_conn: 200
+
+    # PgBouncer 예비 연결 풀 크기 | 범위: 0 ~ 20 | 위험: Normal
+    reserve_pool_size: 5
+
+    # SQLAlchemy 기본 풀 크기 (에이전트당) | 범위: 1 ~ 10 | 위험: Caution
+    sqlalchemy_pool_size: 2
+
+    # SQLAlchemy 최대 오버플로우 연결 수 | 범위: 0 ~ 20 | 위험: Caution
+    sqlalchemy_max_overflow: 3
+
+    # SQLAlchemy 풀 연결 대기 타임아웃 (초) | 범위: 5 ~ 120 | 위험: Normal
+    sqlalchemy_pool_timeout: 30
+
+    # SQLAlchemy 연결 재활용 주기 (초) | 범위: 300 ~ 7200 | 위험: Normal
+    sqlalchemy_pool_recycle: 3600
+
+    # PostgreSQL max_connections (PgBouncer 경유 시 축소)
+    # 범위: 20 ~ 200 | 위험: Caution
+    postgres_max_connections: 50
+
+    # 커넥션 풀 헬스체크 주기 (초) | 범위: 10 ~ 300 | 위험: Normal
+    health_check_interval: 30
+
+    # 에이전트별 커넥션 풀 차등 설정
+    agent_pools:
+      data_engineer:
+        pool_size: 3
+        max_overflow: 5
+      quant:
+        pool_size: 2
+        max_overflow: 3
+      executor:
+        pool_size: 2
+        max_overflow: 3
+      fastapi:
+        pool_size: 3
+        max_overflow: 5
+      # 기타 에이전트: sqlalchemy_pool_size / sqlalchemy_max_overflow 기본값 적용
+
+# ------------------------------------------------------------
 # 프리셋 (Presets)
 # 빈번한 설정 조합을 프리셋으로 정의
 # OpenClaw: "보수적으로 설정해줘" → conservative 프리셋 적용
