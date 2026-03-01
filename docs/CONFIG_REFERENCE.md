@@ -428,6 +428,51 @@
 
 ---
 
+## 2.12. 거래소 API Rate Limiting (`exchange.rate_limit.*`)
+
+다수의 에이전트가 거래소 API에 병렬 호출하는 것을 중앙에서 제어하는 설정값.
+Token Bucket 알고리즘 기반으로 API 호출 예산을 관리한다.
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `exchange.rate_limit.enabled` | 중앙 Rate Limiting 활성화 | `true` | true/false | Caution |
+| `exchange.rate_limit.max_weight_per_minute` | 분당 최대 API 가중치 (Binance 한도: 1200) | `1000` | 500~1200 | Caution |
+| `exchange.rate_limit.max_orders_per_second` | 초당 최대 주문 전송 수 (Binance 한도: 10) | `8` | 1~10 | Caution |
+| `exchange.rate_limit.agent_priority.executor` | 매매 실행 에이전트 우선순위 (높을수록 우선) | `10` | 1~10 | Normal |
+| `exchange.rate_limit.agent_priority.oms` | OMS 동기화 우선순위 | `5` | 1~10 | Normal |
+| `exchange.rate_limit.agent_priority.quant` | 퀀트 에이전트 우선순위 | `3` | 1~10 | Normal |
+| `exchange.rate_limit.agent_priority.data_engineer` | 데이터 수집 우선순위 | `3` | 1~10 | Normal |
+| `exchange.rate_limit.backoff_max_retries` | 429 에러 수신 시 최대 재시도 횟수 | `5` | 1~10 | Normal |
+| `exchange.rate_limit.backpressure_wait_max_seconds` | 토큰 부족 시 최대 대기 시간 (초) | `30` | 5~120 | Normal |
+
+### OpenClaw 변경 예시
+
+```
+사용자: "API 속도 제한 낮춰줘"
+
+시스템: ⚠️ [Caution 설정 변경]
+  exchange.rate_limit.max_weight_per_minute: 1000 → 800
+  영향: API 호출 예산이 줄어 데이터 수집 간격이 늘어날 수 있습니다.
+  정말 변경하시겠습니까? (예/아니오)
+```
+
+---
+
+## 2.13. 동시성 제어 (`concurrency.*`)
+
+다수의 에이전트가 동일한 공유 자원(잔고, 포지션)에 동시 접근할 때
+경쟁 상태(Race Condition)를 방지하는 분산 락(Distributed Lock) 설정값.
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `concurrency.lock_backend` | 분산 락 백엔드 | `"redis"` | redis | Normal |
+| `concurrency.order_lock_ttl_seconds` | 주문 배치 락 TTL (초). 심볼별 동시 주문 방지 | `5` | 2~30 | Caution |
+| `concurrency.balance_lock_ttl_seconds` | 잔고 조회 락 TTL (초). 잔고 읽기→주문 원자적 처리 | `10` | 5~30 | Caution |
+| `concurrency.lock_retry_attempts` | 락 획득 실패 시 재시도 횟수 | `3` | 1~10 | Normal |
+| `concurrency.lock_retry_delay_ms` | 락 재시도 간격 (밀리초) | `100` | 50~1000 | Normal |
+
+---
+
 # 3. OpenClaw 설정 변경 명령어
 
 ## 3.1. 자연어 명령 → 설정 매핑
@@ -634,4 +679,6 @@ OpenClaw 조회:
 | 알림 (`notification.*`) | 7 | 채널, 알림 레벨, 항목별 ON/OFF |
 | 시스템 (`system.*`) | 3 | 매매 ON/OFF, 페이퍼 트레이딩, 유지보수 |
 | LLM 프로바이더 (`llm.*`) | 14 | 프로바이더, 모델, 폴백, 에이전트별 오버라이드, 비용 한도 |
-| **합계** | **99** | |
+| API Rate Limiting (`exchange.rate_limit.*`) | 9 | API 가중치 예산, 에이전트 우선순위, 백프레셔 |
+| 동시성 제어 (`concurrency.*`) | 5 | 분산 락 TTL, 재시도 설정 |
+| **합계** | **113** | |
