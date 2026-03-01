@@ -918,3 +918,419 @@ profit/
 | 설정 변경은 어떻게? | Admin UI + OpenClaw 메시지 모두 지원 |
 | 로그/매매일지 확인? | Admin UI 대시보드 + OpenClaw 명령어 |
 | 투자 견해 질의? | OpenClaw → 오케스트레이터 → 분석/퀀트/리스크 종합 리포트 |
+
+---
+
+# 13. 업계 솔루션 대비 비교 분석 및 보완 사항
+
+## 13.1. 비교 대상 솔루션
+
+| 솔루션 | 유형 | 핵심 특성 |
+|--------|------|-----------|
+| **Numerai** | 크라우드소싱 헤지펀드 | 수천 개 독립 모델의 메타모델 앙상블, NMR 스테이킹 |
+| **Two Sigma / Renaissance** | 기관급 퀀트 헤지펀드 | 대체 데이터, ML/DL, 수백 명 PhD 연구진 |
+| **3Commas / Pionex** | 상용 크립토 봇 | DCA봇, 그리드봇, 멀티 거래소, 사용자 친화 UI |
+| **QuantConnect / Zipline** | 오픈소스 퀀트 플랫폼 | 백테스트-라이브 코드 동일성, 이벤트 드리븐 엔진 |
+| **Trading Technologies / CQG** | 기관급 실행 플랫폼 | FIX 프로토콜, OMS/EMS, 초저지연 실행 |
+| **Hummingbot** | 오픈소스 크립토 봇 | Connector 패턴, Clock 기반 이벤트 루프, Paper Trading |
+
+## 13.2. P.R.O.F.I.T.의 강점 (업계 대비 우수한 점)
+
+1. **멀티 에이전트 합의 구조**: 단일 봇 시스템 대비 의사결정 견고성이 우수. 2-out-of-3 쿼럼 + 리스크 거부권은 학술 근거(arXiv:2602.23330)가 있는 설계
+2. **펀더멘탈+기술적 2단계 선별**: 상용 봇들이 기술적 지표만 사용하는 것과 달리, 거시/미시 경제 분석을 통합한 코인 선별
+3. **리스크 관리 독립성**: 매매와 리스크의 분리는 기관급 설계 원칙을 정확히 반영
+4. **LLM 네이티브 아키텍처**: Claude API 기반 자연어 분석/판단/인터페이스 통합은 기존 퀀트 플랫폼에 없는 차세대 접근
+5. **투명한 의사결정 추적**: 에이전트 판단 근거, 합의 과정, 코사인 유사도까지 기록하는 매매일지
+
+## 13.3. 식별된 핵심 갭 및 보완 사항
+
+### 13.3.1. [P1] OMS 상태 동기화 + 멱등성 키 (Idempotency Keys)
+
+> **위험**: 네트워크 단절 시 "좀비 주문(Zombie Order)"으로 인한 중복 주문 → 직접적 재정 손실
+
+**현행 설계의 문제**:
+매매 실행 에이전트가 주문 전송과 체결 확인에 초점이 맞춰져 있으나,
+주문의 전체 생명주기(생성→전송→부분체결→완전체결→취소→수정)를 관리하는
+상태 머신(Order State Machine)이 부재하다.
+
+**보완 설계**:
+
+```
+[주문 상태 머신 (Order State Machine)]
+
+  CREATED ──→ SUBMITTED ──→ PARTIALLY_FILLED ──→ FILLED
+     │            │                │                  │
+     │            ▼                ▼                  ▼
+     │        REJECTED         CANCELLED          [완료]
+     │            │                │
+     ▼            ▼                ▼
+  [에러 처리]   [로그 기록]      [잔여 수량 처리]
+```
+
+| 구현 항목 | 설명 |
+|-----------|------|
+| **멱등성 키(Idempotency Key)** | 각 주문에 UUID 기반 고유 키 부여. Binance `newClientOrderId`, Coinbase `client_order_id` 활용 |
+| **Redis 키-상태 매핑** | 멱등성 키와 주문 상태를 Redis에 저장 (TTL: 주문 유효기간 + 여유) |
+| **중복 주문 방지** | 동일 키로 재전송 시 기존 결과 반환, 새 주문 생성하지 않음 |
+| **주기적 조정(Reconciliation)** | 거래소 실제 주문 상태와 내부 OMS 상태를 5분 주기로 동기화 |
+| **감사 추적(Audit Trail)** | 모든 주문 이벤트(생성, 수정, 취소, 체결, 오류)를 불변 로그로 기록 |
+
+**Execution Agent 명세 확장**:
+
+| 기능 (기존) | 추가 기능 |
+|------------|-----------|
+| 주문 라우팅 | + 멱등성 키 생성 및 관리 |
+| 체결 확인 | + 주문 상태 머신 전이 관리 |
+| 슬리피지 모니터링 | + 거래소-내부 상태 조정(Reconciliation) |
+| 서킷 브레이커 | + 좀비 주문 감지 및 자동 복구 |
+| 매매 로그 기록 | + 완전한 주문 감사 추적(Audit Trail) |
+
+---
+
+### 13.3.2. [P2] 백테스트-라이브 통합 이벤트 엔진
+
+> **위험**: 백테스팅 코드와 라이브 실행 코드가 분리되면 "백테스트에서만 잘 되는" 전략이 생산됨
+
+**현행 설계의 문제**:
+백테스팅(Backtrader/vectorbt)과 라이브 실행이 별도 코드 경로로 설계되어 있어,
+Look-Ahead Bias, Survivorship Bias 위험이 존재한다.
+
+**보완 설계: 통합 이벤트 엔진 (Unified Event Engine)**
+
+```
+┌──────────────────────────────────────────────────┐
+│            Unified Event Engine                   │
+│                                                   │
+│  ┌──────────────┐     ┌──────────────┐           │
+│  │  Historical   │     │  Live        │           │
+│  │  Data Feed    │     │  Data Feed   │           │
+│  │  (백테스트용)  │     │  (실시간용)   │           │
+│  └──────┬───────┘     └──────┬───────┘           │
+│         │                     │                   │
+│         └──────────┬──────────┘                   │
+│                    ▼                              │
+│         ┌──────────────────┐                      │
+│         │  Event Dispatcher │  ← 동일 인터페이스   │
+│         │  on_tick()        │                      │
+│         │  on_bar()         │                      │
+│         │  on_order()       │                      │
+│         │  on_fill()        │                      │
+│         └────────┬─────────┘                      │
+│                  ▼                                │
+│         ┌──────────────────┐                      │
+│         │  Strategy Code   │  ← 백테스트/라이브    │
+│         │  (동일 코드)      │     동일 코드 실행    │
+│         └────────┬─────────┘                      │
+│                  ▼                                │
+│         ┌──────────────────┐                      │
+│         │  Execution Layer │                      │
+│         │  - Simulated     │  ← 백테스트/Paper    │
+│         │  - Live          │  ← 실제 거래소       │
+│         └──────────────────┘                      │
+└──────────────────────────────────────────────────┘
+```
+
+| 구현 항목 | 설명 |
+|-----------|------|
+| **추상 DataFeed** | Historical/Live 모두 동일 인터페이스(on_tick, on_bar)로 전략에 데이터 전달 |
+| **추상 Broker** | SimulatedBroker(백테스트/Paper) / LiveBroker(실제 거래소)로 체결 분기 |
+| **현실적 백테스트** | 슬리피지 모델(Volume-based), 커미션 모델, 시장 영향(Market Impact) 모델 포함 |
+| **Walk-Forward Analysis** | 과최적화 방지를 위한 Walk-Forward Optimization, Monte Carlo Simulation |
+
+---
+
+### 13.3.3. [P3] CI/CD + Sandbox Forward Testing (Paper Trading)
+
+> **위험**: 새로운 전략/코드를 프로덕션에 직접 배포하면 버그로 인한 즉각적 재정 손실 발생
+
+**보완 설계: 4단계 전략 배포 파이프라인**
+
+```
+Stage 1: 검증 (CI)
+──────────────────
+  코드 변경 → Lint + Unit Test + Integration Test
+  ├── 통과 → Stage 2로
+  └── 실패 → QA 에이전트 피드백 → 재작업
+
+Stage 2: 백테스트
+──────────────────
+  과거 6개월 데이터로 자동 백테스트
+  ├── 성과 기준 충족 확인:
+  │     Sharpe > 1.0
+  │     MDD < -20%
+  │     Win Rate > 50%
+  │     손익비 > 1.5
+  ├── 통과 → Stage 3로
+  └── 미달 → 전략 재검토
+
+Stage 3: Paper Trading (Forward Test)
+──────────────────────────────────────
+  Sandbox 컨테이너에서 실시간 데이터 + 가상 체결
+  ├── 최소 2주간 운영
+  ├── 실제 시장 데이터 수신, 가상 체결 엔진으로 주문 처리
+  ├── 성과 리포트 자동 생성
+  ├── 통과 → Stage 4로
+  └── 미달 → Stage 2로 회귀
+
+Stage 4: 프로덕션 배포
+──────────────────────
+  관리자 수동 승인 → 소액(전체 자금 10%) 실거래 시작
+  ├── 1주간 소액 운영
+  ├── 성과 확인 후 전체 자금 적용
+  └── 이상 시 자동 롤백
+```
+
+**Docker 환경 추가 서비스**:
+
+| 서비스 | 역할 |
+|--------|------|
+| `profit-sandbox` | Paper Trading 전용 컨테이너. 실시간 데이터 수신 + 가상 체결 |
+| `profit-ci` | 코드 변경 시 자동 테스트/백테스트 실행 |
+
+---
+
+### 13.3.4. [P4] 에이전트 성과 추적 및 동적 가중치
+
+> Numerai의 메타모델처럼, 에이전트별 과거 정확도를 기반으로 합의 가중치를 동적 조정
+
+**현행 설계의 문제**:
+"가중 투표(Weighted Voting)"가 명시되어 있으나, 가중치 산출 방법이 불명확하다.
+
+**보완 설계**:
+
+| 추적 지표 | 설명 | 가중치 반영 |
+|-----------|------|-------------|
+| 시그널 정확도 | 에이전트 예측 방향 vs 실제 가격 변동 | 최근 30일 이동 정확도 |
+| 리포트 신뢰도 | 분석 리포트의 결론 vs 실제 시장 방향 | EMA(지수이동평균) 기반 |
+| 리스크 판단 정확도 | 리스크 경고 발동 vs 실제 손실 발생 | 적중률 기반 |
+
+```
+[에이전트 성과 추적 흐름]
+
+  매매 완료 → 실제 결과 기록
+       │
+       ▼
+  각 에이전트의 과거 판단과 대조
+       │
+       ├── 경제 분석: 시장 방향 예측 정확도
+       ├── 퀀트: 시그널 스코어 vs 실제 수익률 상관계수
+       └── 리스크: 위험 경고의 적중률
+       │
+       ▼
+  에이전트별 신뢰도 점수 갱신 (0.0 ~ 1.0)
+       │
+       ▼
+  다음 합의 투표 시 가중치로 반영
+  (신뢰도가 높은 에이전트의 의견에 더 높은 가중치)
+```
+
+---
+
+### 13.3.5. [P5] 거래 비용 분석 (TCA) 모듈
+
+> 기관 펀드 수준의 실행 품질 측정 및 개선
+
+| TCA 항목 | 설명 |
+|----------|------|
+| **사전 분석 (Pre-Trade)** | 호가창 깊이, 스프레드, 예상 슬리피지를 기반으로 최적 주문 방식 결정 |
+| **실시간 분석 (In-Trade)** | 체결 진행 중 슬리피지 모니터링, 임계값 초과 시 주문 일시중단 |
+| **사후 분석 (Post-Trade)** | Implementation Shortfall 계산: 의사결정 시점 가격 vs 실제 체결 가격 차이 |
+
+**실행 알고리즘 확장**:
+
+| 알고리즘 | 사용 조건 | 설명 |
+|----------|-----------|------|
+| **Market Order** | 긴급 매매, 소액 | 즉시 체결, 슬리피지 감수 |
+| **Limit Order** | 일반 매매 | 지정가 주문, 미체결 위험 |
+| **TWAP** | 대량 주문 | 시간 균등 분할, 시장 영향 최소화 |
+| **VWAP** | 대량 주문, 유동성 고려 | 거래량 가중 분할, 시장 평균에 근접 |
+| **Iceberg** | 대량 주문, 의도 은닉 | 소량씩 노출, 전체 수량 미공개 |
+
+---
+
+### 13.3.6. [P6] Admin UI 분리 (Control Plane + Data Plane)
+
+> 제어(React) vs 시각화(Grafana) 분리로 개발 효율성 향상
+
+**보완 설계**:
+
+```
+┌──────────────────────────────────────────────────┐
+│              Admin Interface Layer                │
+│                                                   │
+│  ┌────────────────────┐  ┌─────────────────────┐ │
+│  │  Control Plane     │  │  Data Plane         │ │
+│  │  (React Admin UI)  │  │  (Grafana)          │ │
+│  │                    │  │                     │ │
+│  │  • 매매 파라미터    │  │  • 포트폴리오 수익률  │ │
+│  │  • 전략 ON/OFF     │  │  • 체결 내역 차트    │ │
+│  │  • 긴급 정지       │  │  • 슬리피지 통계    │ │
+│  │  • 수동 매매       │  │  • 에이전트 메트릭   │ │
+│  │  • 블랙/화이트리스트│  │  • 시스템 리소스     │ │
+│  │  • 2FA 인증 필수   │  │  • 에러 발생률      │ │
+│  │                    │  │  • 읽기 전용        │ │
+│  └────────────────────┘  └─────────────────────┘ │
+│           │                        │              │
+│           ▼                        ▼              │
+│     FastAPI Backend          TimescaleDB          │
+│                              Prometheus           │
+└──────────────────────────────────────────────────┘
+```
+
+| 구분 | Control Plane (React) | Data Plane (Grafana) |
+|------|----------------------|---------------------|
+| 목적 | 시스템 제어 및 입력 | 데이터 시각화 및 모니터링 |
+| 인증 | 2FA 필수, 감사 로그 | 읽기 전용, 기본 인증 |
+| 데이터 소스 | FastAPI REST API | TimescaleDB, Prometheus 직접 연결 |
+| 장점 | 제어 로직에 집중 | 차트/대시보드 개발 시간 대폭 절약 |
+| 통합 | Grafana 패널을 iframe 임베드 가능 | React UI에서 링크 연동 |
+
+---
+
+### 13.3.7. [P7] 크리덴셜 보안 강화
+
+> `.env` 평문 저장 → 단계적 보안 강화
+
+**단계적 도입 방안**:
+
+| 단계 | 방법 | 시점 | 노력 |
+|------|------|------|------|
+| **1단계** | Docker Secrets | 즉시 | 낮음 |
+| | docker-compose.yml의 `secrets` 기능 활용 | | |
+| | 파일시스템 평문 노출 제거 | | |
+| **2단계** | SOPS + Age 암호화 | MVP 이후 | 중간 |
+| | 설정 파일 암호화, Git에 안전하게 커밋 가능 | | |
+| **3단계** | HashiCorp Vault | 규모 확대 시 | 높음 |
+| | 동적 시크릿 생성/만료, 접근 정책, 감사 로그 | | |
+| | API 키 자동 로테이션 | | |
+
+---
+
+## 13.4. 개선 우선순위 매트릭스
+
+| 순위 | 개선 항목 | 영향도 | 노력 | 근거 |
+|------|-----------|--------|------|------|
+| **P1** | OMS + 멱등성 키 | 매우 높음 | 중간 | 좀비 주문 = 직접적 재정 손실 |
+| **P2** | 백테스트-라이브 통합 이벤트 엔진 | 매우 높음 | 높음 | 전략 신뢰성의 근간 |
+| **P3** | CI/CD + Paper Trading | 높음 | 중간 | 기관 펀드 필수 프로세스 |
+| **P4** | 에이전트 성과 추적 + 동적 가중치 | 높음 | 중간 | 합의 메커니즘 실효성 강화 |
+| **P5** | TCA 모듈 | 중간 | 중간 | 기관급 실행 품질 |
+| **P6** | Admin UI 분리 (React + Grafana) | 중간 | 낮음 | 개발 효율성 향상 |
+| **P7** | 크리덴셜 보안 강화 | 중간 | 낮음~중간 | Docker Secrets 우선 적용 |
+
+---
+
+## 13.5. 프로젝트 디렉토리 구조 (보완 반영)
+
+기존 구조에 OMS, 이벤트 엔진, Paper Trading, TCA 모듈을 추가한다.
+
+```
+profit/
+├── docker-compose.yml
+├── docker-compose.sandbox.yml     # Paper Trading 환경
+├── Dockerfile
+├── .env.example
+├── docs/
+│   └── ARCHITECTURE.md
+│
+├── src/
+│   ├── core/
+│   │   ├── orchestrator.py
+│   │   ├── consensus.py
+│   │   ├── config.py
+│   │   └── event_engine.py        # ★ 통합 이벤트 엔진
+│   │
+│   ├── agents/
+│   │   ├── base.py
+│   │   ├── analyst/
+│   │   │   ├── macro.py
+│   │   │   ├── micro.py
+│   │   │   ├── sentiment.py
+│   │   │   └── screener.py
+│   │   ├── quant/
+│   │   │   ├── indicators.py
+│   │   │   ├── signals.py
+│   │   │   ├── backtest.py
+│   │   │   └── strategies/
+│   │   ├── risk/
+│   │   │   ├── manager.py
+│   │   │   ├── limits.py
+│   │   │   └── circuit_breaker.py
+│   │   ├── portfolio/
+│   │   │   ├── manager.py
+│   │   │   ├── rebalancer.py
+│   │   │   └── sizing.py
+│   │   ├── executor/
+│   │   │   ├── engine.py
+│   │   │   ├── order.py
+│   │   │   ├── monitor.py
+│   │   │   └── oms.py             # ★ 주문 관리 시스템 (상태 머신 + 멱등성)
+│   │   ├── engineer/
+│   │   │   ├── pipeline.py
+│   │   │   ├── schema.py
+│   │   │   └── quality.py
+│   │   ├── developer/
+│   │   │   └── ...
+│   │   └── qa/
+│   │       ├── validator.py
+│   │       └── forward_test.py    # ★ Paper Trading 검증
+│   │
+│   ├── api/
+│   │   ├── routes/
+│   │   ├── websocket/
+│   │   └── middleware/
+│   │       └── auth.py            # ★ 2FA 인증
+│   │
+│   ├── exchange/
+│   │   ├── adapter.py             # ★ 거래소 추상화 계층 (ccxt 위 래퍼)
+│   │   ├── client.py
+│   │   ├── websocket.py
+│   │   ├── models.py
+│   │   └── tca.py                 # ★ 거래 비용 분석 모듈
+│   │
+│   ├── data/
+│   │   ├── collectors/
+│   │   ├── models/
+│   │   └── migrations/
+│   │
+│   ├── tracking/
+│   │   └── agent_performance.py   # ★ 에이전트 성과 추적
+│   │
+│   └── integrations/
+│       ├── openclaw/
+│       │   ├── handler.py
+│       │   └── commands.py
+│       └── notifications/
+│
+├── frontend/                       # Control Plane (React)
+│   ├── src/
+│   │   ├── pages/
+│   │   ├── components/
+│   │   └── hooks/
+│   └── package.json
+│
+├── grafana/                        # ★ Data Plane (Grafana)
+│   ├── provisioning/
+│   │   ├── dashboards/
+│   │   │   ├── portfolio.json
+│   │   │   ├── trading.json
+│   │   │   └── system.json
+│   │   └── datasources/
+│   │       └── datasource.yml
+│   └── grafana.ini
+│
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── backtest/
+│
+├── config/
+│   ├── strategies/
+│   ├── exchanges/
+│   └── agents/
+│
+└── .github/                        # ★ CI/CD 파이프라인
+    └── workflows/
+        ├── ci.yml                  # Lint + Test + 백테스트
+        └── deploy.yml              # Staging → Production 배포
+```
