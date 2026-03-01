@@ -3,11 +3,13 @@
 시스템 부팅 시:
 1. ConfigManager, Redis, LLMRouter 초기화
 2. BootSequenceManager 6단계 실행
-3. 헬스체크 및 메트릭 엔드포인트 제공
+3. Redis → WebSocket 브리지 시작
+4. REST API + WebSocket 엔드포인트 제공
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -15,6 +17,9 @@ from typing import Any
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 
+from src.api.routes import agents, config, dashboard, signals, system, trading
+from src.api.websocket.handlers import router as ws_router
+from src.api.websocket.manager import RedisBridge, ws_manager
 from src.core.boot import BootSequenceManager, BootStatus
 from src.core.config import ConfigManager, ProfitConfig
 from src.core.llm.router import LLMRouter
@@ -26,6 +31,8 @@ _config: ProfitConfig | None = None
 _redis: aioredis.Redis | None = None
 _llm_router: LLMRouter | None = None
 _boot_status: BootStatus | None = None
+_redis_bridge: RedisBridge | None = None
+_bridge_task: asyncio.Task[None] | None = None
 
 
 def _setup_logging(level: str = "INFO") -> None:
@@ -40,6 +47,7 @@ def _setup_logging(level: str = "INFO") -> None:
 async def lifespan(app: FastAPI):  # noqa: ANN201
     """애플리케이션 시작/종료 시 리소스를 관리한다."""
     global _config, _redis, _llm_router, _boot_status  # noqa: PLW0603
+    global _redis_bridge, _bridge_task  # noqa: PLW0603
 
     # ── 시작 ──
     import os
@@ -68,6 +76,11 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
     boot_manager = BootSequenceManager(_config, _redis, db_url)
     _boot_status = await boot_manager.run()
 
+    # 5) Redis → WebSocket 브리지 시작
+    _redis_bridge = RedisBridge(ws_manager)
+    bridge_redis = aioredis.from_url(redis_url, decode_responses=True)
+    _bridge_task = asyncio.create_task(_redis_bridge.start(bridge_redis))
+
     logger.info(
         "P.R.O.F.I.T. ready (trading=%s, boot=%s, duration=%dms)",
         _config.system.trading_enabled,
@@ -79,6 +92,14 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
 
     # ── 종료 ──
     logger.info("P.R.O.F.I.T. shutting down...")
+    if _redis_bridge:
+        _redis_bridge.stop()
+    if _bridge_task:
+        _bridge_task.cancel()
+        try:
+            await _bridge_task
+        except asyncio.CancelledError:
+            pass
     if _redis:
         await _redis.aclose()
     logger.info("P.R.O.F.I.T. stopped")
@@ -91,6 +112,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── REST API 라우터 등록 ──
+app.include_router(dashboard.router)
+app.include_router(trading.router)
+app.include_router(config.router)
+app.include_router(agents.router)
+app.include_router(signals.router)
+app.include_router(system.router)
+
+# ── WebSocket 라우터 등록 ──
+app.include_router(ws_router)
+
+
+# ── 기본 엔드포인트 ──
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
@@ -110,6 +144,7 @@ async def health() -> dict[str, Any]:
         "llm_router": _llm_router is not None,
         "paper_trading": _config.system.paper_trading_mode if _config else None,
         "trading_enabled": _config.system.trading_enabled if _config else None,
+        "websocket_connections": ws_manager.connection_count,
     }
 
 

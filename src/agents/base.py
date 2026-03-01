@@ -168,7 +168,7 @@ class BaseAgent(ABC):
     # ── 헬스체크 ──
 
     async def heartbeat(self) -> dict[str, Any]:
-        """에이전트 상태를 Redis에 기록하고 반환한다."""
+        """에이전트 상태를 Redis에 기록하고 pub/sub으로 브로드캐스트한다."""
         now = time.time()
         self._last_heartbeat = now
 
@@ -180,11 +180,9 @@ class BaseAgent(ABC):
             "uptime_seconds": now - self._started_at if self._started_at else 0,
         }
 
-        await self._redis.hset(
-            "agent:heartbeat",
-            self.agent_type,
-            json.dumps(info, default=str),
-        )
+        payload = json.dumps(info, default=str)
+        await self._redis.hset("agent:heartbeat", self.agent_type, payload)
+        await self._redis.publish("agent:status_changed", payload)
         return info
 
     # ── 서브클래스 구현 ──
