@@ -103,6 +103,7 @@ class RiskManagerAgent(BaseAgent):
             "position_id": pos.get("position_id"),
             "price": pos.get("current_price"),
             "loss_pct": loss_pct,
+            "position_quantity": pos.get("quantity", 0),
         })
         self._consecutive_losses += 1
 
@@ -116,6 +117,7 @@ class RiskManagerAgent(BaseAgent):
             "position_id": pos.get("position_id"),
             "price": pos.get("current_price"),
             "profit_pct": (pos.get("current_price", 0) - pos.get("entry_price", 0)) / max(pos.get("entry_price", 1), 1),
+            "position_quantity": pos.get("quantity", 0),
         })
 
     # ── 리스크 평가 ──

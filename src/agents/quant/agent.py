@@ -206,15 +206,16 @@ class QuantAgent(BaseAgent):
     async def _generate_signal(
         self, coin: dict[str, Any], indicators: dict[str, Any], scan_type: str
     ) -> None:
-        """fast_scan에서 임계값 초과 시 간이 신호 발행."""
-        signal = {
-            "signal_id": f"SIG-{datetime.now(tz=timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-            "symbol": coin.get("symbol"),
-            "scan_type": scan_type,
-            "indicators": indicators,
-        }
-        await self._publish_signal(signal)
+        """fast_scan에서 임계값 초과 시 LLM 기반 신호 발행.
+
+        합의 프로토콜이 요구하는 필수 필드(direction, signal_score,
+        entry_price, target_price, stop_loss_price)를 포함한다.
+        """
+        result = await self._llm_analyze_signal(coin, {"fast": indicators})
+        if not result:
+            return
+        result["scan_type"] = scan_type
+        await self._publish_signal(result)
 
     async def _publish_signal(self, signal: dict[str, Any]) -> None:
         """생성된 신호를 quant:signal 채널에 발행한다."""

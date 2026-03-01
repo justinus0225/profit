@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, String, Text, func
+from sqlalchemy import DateTime, Float, LargeBinary, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,9 +17,10 @@ class AgentMemoryEmbedding(UUIDPrimaryKeyMixin, Base):
     RAG 파이프라인에서 코사인 유사도 검색에 사용된다.
     벡터 차원: config llm_memory.embedding_dimension (기본 768).
 
-    NOTE: pgvector의 Vector 타입은 Alembic 마이그레이션에서
-    CREATE EXTENSION vector 후 사용한다. SQLAlchemy 모델에서는
-    LargeBinary로 매핑하고 실제 DDL은 마이그레이션에서 처리한다.
+    NOTE: embedding 컬럼은 SQLAlchemy에서 LargeBinary로 선언하고
+    Alembic 마이그레이션에서 CREATE EXTENSION vector 후
+    ALTER COLUMN embedding TYPE vector(768)을 적용한다.
+    pgvector 패키지가 설치된 환경에서는 Vector(768) 타입을 직접 사용 가능.
     """
 
     __tablename__ = "agent_memory_embeddings"
@@ -33,8 +34,8 @@ class AgentMemoryEmbedding(UUIDPrimaryKeyMixin, Base):
         DateTime(timezone=True), nullable=False
     )
 
-    # 임베딩 벡터 - 실제 DDL에서 vector(768) 타입 적용
-    # embedding 컬럼은 마이그레이션에서 직접 정의
+    # 임베딩 벡터 (vector(768) - 마이그레이션에서 타입 변환)
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary)
 
     # 메타데이터
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, default=dict)

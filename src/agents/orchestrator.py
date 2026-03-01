@@ -5,6 +5,7 @@ ARCHITECTURE.md: Level 3, Orchestrator / CTO
 - Risk Manager 거부권 처리
 - 신호 → 검증 → 합의 → 실행 워크플로우 조율
 - 코사인 유사도 기반 방향성 일치 검증
+- ConsensusManager를 통한 합의 라운드 관리 + 메트릭
 """
 
 from __future__ import annotations
@@ -12,57 +13,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from src.agents.base import BaseAgent
+from src.core.consensus import ConsensusManager, ConsensusResult, ConsensusRound
 from src.core.llm.client import Message, Role
 
 logger = logging.getLogger(__name__)
 
 
-class ConsensusRound:
-    """단일 합의 라운드 상태 추적."""
-
-    def __init__(self, signal: dict[str, Any]) -> None:
-        self.round_id = str(uuid.uuid4())
-        self.signal = signal
-        self.signal_id = signal.get("signal_id", "")
-        self.created_at = time.time()
-
-        # 투표 결과
-        self.quant_vote: bool = True  # 신호 발신자이므로 기본 승인
-        self.analyst_vote: bool | None = None
-        self.analyst_response: dict[str, Any] = {}
-        self.risk_vote: bool | None = None
-        self.risk_response: dict[str, Any] = {}
-        self.risk_veto: bool = False
-
-        self.resolved = False
-        self.result: str = ""  # "approved" | "rejected"
-        self.rejection_reason: str = ""
-
-    @property
-    def votes_collected(self) -> bool:
-        return self.analyst_vote is not None and self.risk_vote is not None
-
-    @property
-    def vote_count(self) -> int:
-        count = 1  # quant always votes yes
-        if self.analyst_vote:
-            count += 1
-        if self.risk_vote:
-            count += 1
-        return count
-
-    def is_expired(self, timeout_seconds: float = 120) -> bool:
-        return time.time() - self.created_at > timeout_seconds
-
-
 class OrchestratorAgent(BaseAgent):
-    """오케스트레이터: 합의 프로토콜 + 워크플로우 조율."""
+    """오케스트레이터: 합의 프로토콜 + 워크플로우 조율.
+
+    ConsensusManager에 합의 라운드 관리를 위임한다.
+    """
 
     @property
     def agent_type(self) -> str:
@@ -70,11 +35,12 @@ class OrchestratorAgent(BaseAgent):
 
     async def _on_initialize(self) -> None:
         self._signal_cfg = self._config.signal
-        self._quorum_required = self._signal_cfg.consensus_quorum
-        self._similarity_min = self._signal_cfg.consensus_similarity_min
 
-        # 진행 중 합의 라운드
-        self._active_rounds: dict[str, ConsensusRound] = {}
+        # ConsensusManager 초기화
+        self._consensus = ConsensusManager(
+            quorum_required=self._signal_cfg.consensus_quorum,
+            similarity_min=self._signal_cfg.consensus_similarity_min,
+        )
 
         # 이벤트 구독
         await self._subscribe("quant:signal", self._on_quant_signal)
@@ -84,7 +50,9 @@ class OrchestratorAgent(BaseAgent):
     async def _on_run(self) -> None:
         """타임아웃 라운드 정리 루프."""
         while self._running:
-            await self._cleanup_expired_rounds()
+            expired = self._consensus.cleanup_expired()
+            for round_ in expired:
+                await self._publish_rejection(round_)
             await asyncio.sleep(10)
 
     # ── 합의 프로토콜 ──
@@ -95,8 +63,7 @@ class OrchestratorAgent(BaseAgent):
         if not signal_id:
             return
 
-        round_ = ConsensusRound(data)
-        self._active_rounds[signal_id] = round_
+        round_ = self._consensus.create_round(data)
 
         logger.info("[%s] Consensus round started: %s %s (score=%s)",
                      self.name, data.get("direction"), data.get("symbol"),
@@ -124,18 +91,11 @@ class OrchestratorAgent(BaseAgent):
     async def _on_analyst_response(self, data: dict[str, Any]) -> None:
         """애널리스트 검증 응답 수신."""
         signal_id = data.get("signal_id", "")
-        round_ = self._active_rounds.get(signal_id)
-        if not round_ or round_.resolved:
+        round_ = self._consensus.register_analyst_vote(
+            signal_id, data.get("approval", False), data,
+        )
+        if not round_:
             return
-
-        round_.analyst_vote = data.get("approval", False)
-        round_.analyst_response = data
-
-        logger.info("[%s] Analyst vote: %s (direction=%.2f, score=%s)",
-                     self.name,
-                     "YES" if round_.analyst_vote else "NO",
-                     data.get("market_direction_score", 0),
-                     data.get("fundamental_score", 0))
 
         if round_.votes_collected:
             await self._resolve_consensus(round_)
@@ -143,88 +103,39 @@ class OrchestratorAgent(BaseAgent):
     async def _on_risk_response(self, data: dict[str, Any]) -> None:
         """리스크 매니저 검증 응답 수신."""
         signal_id = data.get("signal_id", "")
-        round_ = self._active_rounds.get(signal_id)
-        if not round_ or round_.resolved:
+        round_ = self._consensus.register_risk_vote(
+            signal_id, data.get("approval", False), data,
+        )
+        if not round_:
             return
-
-        round_.risk_vote = data.get("approval", False)
-        round_.risk_veto = data.get("veto_flag", False)
-        round_.risk_response = data
-
-        logger.info("[%s] Risk vote: %s (veto=%s, level=%s)",
-                     self.name,
-                     "YES" if round_.risk_vote else "NO",
-                     round_.risk_veto,
-                     data.get("risk_level"))
 
         if round_.votes_collected:
             await self._resolve_consensus(round_)
 
     async def _resolve_consensus(self, round_: ConsensusRound) -> None:
         """Step 3-4: 합의 결과 판정."""
-        round_.resolved = True
-        signal = round_.signal
-        signal_id = round_.signal_id
+        result = self._consensus.evaluate(round_)
 
-        # Risk Manager 거부권 체크
-        if round_.risk_veto:
-            round_.result = "rejected"
-            round_.rejection_reason = f"Risk Manager VETO: {round_.risk_response.get('rejection_reason', '')}"
+        if result == ConsensusResult.REJECTED:
             await self._publish_rejection(round_)
             return
 
-        # 코사인 유사도 체크 (퀀트 방향 vs 애널리스트 방향)
-        quant_direction = 1.0 if signal.get("direction") == "BUY" else -1.0
-        analyst_direction = round_.analyst_response.get("market_direction_score", 0)
-        similarity = self._cosine_similarity(quant_direction, analyst_direction)
-
-        if similarity < self._similarity_min:
-            round_.result = "rejected"
-            round_.rejection_reason = (
-                f"Direction mismatch: similarity={similarity:.2f} < {self._similarity_min}"
-            )
-            await self._publish_rejection(round_)
-            return
-
-        # 2-out-of-3 쿼럼 체크
-        if round_.vote_count < self._quorum_required:
-            round_.result = "rejected"
-            round_.rejection_reason = (
-                f"Quorum not met: {round_.vote_count}/{self._quorum_required}"
-            )
-            await self._publish_rejection(round_)
+        if result == ConsensusResult.PENDING:
             return
 
         # ── 합의 달성 → LLM 최종 판단 ──
-        final_decision = await self._llm_final_decision(round_, similarity)
+        final_decision = await self._llm_final_decision(round_)
 
         if final_decision.get("final_decision") == "approve":
-            round_.result = "approved"
-            await self._publish_approval(round_, similarity, final_decision)
+            self._consensus.finalize_approval(round_, final_decision)
+            await self._publish_approval(round_, final_decision)
         else:
-            round_.result = "rejected"
-            round_.rejection_reason = final_decision.get("reasoning", "LLM final rejection")
+            reason = final_decision.get("reasoning", "LLM final rejection")
+            self._consensus.finalize_rejection(round_, reason)
             await self._publish_rejection(round_)
 
-    def _cosine_similarity(self, quant_direction: float, analyst_score: float) -> float:
-        """방향성 유사도 계산.
-
-        퀀트 방향(+1/-1)과 애널리스트 시장 방향 점수(-1.0~+1.0)의
-        정규화된 유사도를 반환한다 (0.0~1.0).
-        예: quant=+1, analyst=+0.35 → 0.675 (방향 일치, 강도 부분 일치)
-        """
-        if quant_direction == 0 or analyst_score == 0:
-            return 0.0
-        # 방향 일치 시: 0.5 + (analyst 강도 * 0.5)
-        # 방향 불일치 시: 0.5 - (analyst 강도 * 0.5)
-        sign_match = (quant_direction > 0) == (analyst_score > 0)
-        strength = abs(analyst_score)
-        if sign_match:
-            return 0.5 + strength * 0.5
-        return 0.5 - strength * 0.5
-
     async def _llm_final_decision(
-        self, round_: ConsensusRound, similarity: float
+        self, round_: ConsensusRound
     ) -> dict[str, Any]:
         """LLM 최종 의사결정."""
         signal = round_.signal
@@ -236,16 +147,19 @@ class OrchestratorAgent(BaseAgent):
             '"reasoning": str, "position_size_adjustment": float(0.5-1.0)}'
         )
 
+        analyst_vote = round_.analyst_vote
+        risk_vote = round_.risk_vote
+
         user_prompt = (
             f"Signal: {signal.get('symbol')} {signal.get('direction')} "
             f"(score={signal.get('signal_score')})\n"
             f"Quant approval: YES\n"
-            f"Analyst approval: {'YES' if round_.analyst_vote else 'NO'} "
-            f"(direction={round_.analyst_response.get('market_direction_score', 0):.2f})\n"
-            f"Risk approval: {'YES' if round_.risk_vote else 'NO'} "
-            f"(level={round_.risk_response.get('risk_level', 'unknown')})\n"
-            f"Cosine similarity: {similarity:.2f}\n"
-            f"Consensus votes: {round_.vote_count}/{self._quorum_required}\n"
+            f"Analyst approval: {'YES' if analyst_vote and analyst_vote.approved else 'NO'} "
+            f"(direction={analyst_vote.data.get('market_direction_score', 0):.2f if analyst_vote else 0})\n"
+            f"Risk approval: {'YES' if risk_vote and risk_vote.approved else 'NO'} "
+            f"(level={risk_vote.data.get('risk_level', 'unknown') if risk_vote else 'unknown'})\n"
+            f"Cosine similarity: {round_.cosine_similarity:.2f}\n"
+            f"Consensus votes: {round_.vote_count}/{self._signal_cfg.consensus_quorum}\n"
             f"Risk veto: {round_.risk_veto}\n\n"
             f"Proceed with trade? Final decision?"
         )
@@ -263,7 +177,7 @@ class OrchestratorAgent(BaseAgent):
     # ── 결과 발행 ──
 
     async def _publish_approval(
-        self, round_: ConsensusRound, similarity: float, decision: dict[str, Any]
+        self, round_: ConsensusRound, decision: dict[str, Any]
     ) -> None:
         """합의 승인 발행."""
         signal = round_.signal
@@ -278,16 +192,17 @@ class OrchestratorAgent(BaseAgent):
             "stop_loss_price": signal.get("stop_loss_price"),
             "holding_period": signal.get("holding_period"),
             "consensus_votes": round_.vote_count,
-            "cosine_similarity": similarity,
+            "cosine_similarity": round_.cosine_similarity,
             "confidence": decision.get("confidence", 0),
             "position_size_adjustment": decision.get("position_size_adjustment", 1.0),
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
         }
         await self._publish("orchestrator:approval", payload)
         await self._publish("orchestrator:consensus_approved", payload)
+
         logger.info("[%s] APPROVED: %s %s (votes=%d, sim=%.2f)",
                      self.name, signal.get("direction"), signal.get("symbol"),
-                     round_.vote_count, similarity)
+                     round_.vote_count, round_.cosine_similarity)
 
     async def _publish_rejection(self, round_: ConsensusRound) -> None:
         """합의 거부 발행."""
@@ -295,23 +210,16 @@ class OrchestratorAgent(BaseAgent):
             "signal_id": round_.signal_id,
             "round_id": round_.round_id,
             "symbol": round_.signal.get("symbol"),
-            "rejection_reason": round_.rejection_reason,
+            "rejection_reason": round_.rejection_detail,
             "consensus_votes": round_.vote_count,
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
         })
         logger.info("[%s] REJECTED: %s - %s",
-                     self.name, round_.signal.get("symbol"), round_.rejection_reason)
+                     self.name, round_.signal.get("symbol"), round_.rejection_detail)
 
-    # ── 유틸리티 ──
+    # ── 메트릭 ──
 
-    async def _cleanup_expired_rounds(self) -> None:
-        """타임아웃된 합의 라운드 정리."""
-        expired = [sid for sid, r in self._active_rounds.items() if r.is_expired()]
-        for sid in expired:
-            round_ = self._active_rounds.pop(sid)
-            if not round_.resolved:
-                round_.resolved = True
-                round_.result = "rejected"
-                round_.rejection_reason = "Consensus timeout"
-                await self._publish_rejection(round_)
-                logger.warning("[%s] Round timeout: %s", self.name, sid)
+    @property
+    def consensus_metrics(self) -> dict[str, Any]:
+        """합의 메트릭 조회."""
+        return self._consensus.metrics.to_dict()

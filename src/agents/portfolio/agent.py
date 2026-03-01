@@ -205,6 +205,12 @@ class PortfolioManagerAgent(BaseAgent):
         await self._publish("portfolio:trade_approved", {
             "signal_id": data.get("signal_id"),
             "symbol": data.get("symbol"),
+            "direction": data.get("direction"),
+            "entry_price": data.get("entry_price"),
+            "target_price": data.get("target_price"),
+            "stop_loss_price": data.get("stop_loss_price"),
+            "position_size_usd": data.get("position_size_usd", 0),
+            "position_size_adjustment": data.get("position_size_adjustment", 1.0),
             "holding_type": holding_period,
             "max_holding_days": max_days.get(holding_period),
         })
