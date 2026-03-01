@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "profit"
+version = "0.1.0"
+description = "P.R.O.F.I.T. - Predictive Routing & Orchestration Framework for Intelligent Trading"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    # Database
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    # Redis
+    "redis[hiredis]>=5.2.0",
+    # Configuration
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "pyyaml>=6.0.0",
+    # LLM Providers
+    "anthropic>=0.42.0",
+    "google-genai>=1.0.0",
+    "openai>=1.60.0",
+    # Exchange
+    "ccxt>=4.4.0",
+    # HTTP client
+    "httpx>=0.28.0",
+    # Technical indicators
+    "pandas>=2.2.0",
+    "numpy>=2.0.0",
+    "pandas-ta>=0.3.14b1",
+    # Monitoring
+    "prometheus-client>=0.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true

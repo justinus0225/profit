@@ -1,0 +1,127 @@
+services:
+  # ── TimescaleDB (시계열 DB) ──
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: profit-timescaledb
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: profit_db
+      POSTGRES_USER: profit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-profit_dev_password}
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U profit -d profit_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - profit-network
+
+  # ── PgBouncer (커넥션 풀링) ──
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: profit-pgbouncer
+    restart: always
+    ports:
+      - "6432:6432"
+    environment:
+      DATABASE_URL: postgres://profit:${POSTGRES_PASSWORD:-profit_dev_password}@timescaledb:5432/profit_db
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: 20
+      MAX_CLIENT_CONN: 200
+      RESERVE_POOL_SIZE: 5
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - profit-network
+
+  # ── Redis (메시지 브로커 + 캐시) ──
+  redis:
+    image: redis:7-alpine
+    container_name: profit-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-profit_dev_password}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-profit_dev_password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - profit-network
+
+  # ── PROFIT Core (Python/FastAPI) ──
+  profit-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: profit-core
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://profit:${POSTGRES_PASSWORD:-profit_dev_password}@pgbouncer:6432/profit_db
+      REDIS_URL: redis://:${REDIS_PASSWORD:-profit_dev_password}@redis:6379/0
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - profit-network
+
+  # ── Prometheus (메트릭 수집) ──
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: profit-prometheus
+    restart: always
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - profit-network
+
+  # ── Grafana (모니터링 대시보드) ──
+  grafana:
+    image: grafana/grafana:latest
+    container_name: profit-grafana
+    restart: always
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - profit-network
+
+volumes:
+  timescaledb_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  profit-network:
+    driver: bridge
