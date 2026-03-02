@@ -6,6 +6,7 @@ YAML 로딩 + 유효성 검증 + 환경 변수 오버라이드를 지원한다.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -543,6 +544,19 @@ class ConfigManager:
             return ProfitConfig()
         with open(path) as f:
             raw = yaml.safe_load(f) or {}
+
+        # 환경 변수 오버라이드: .env 파일의 SYSTEM_* 설정이 YAML보다 우선
+        raw.setdefault("system", {})
+        env_overrides = {
+            "SYSTEM_TRADING_ENABLED": ("system", "trading_enabled"),
+            "SYSTEM_PAPER_TRADING_MODE": ("system", "paper_trading_mode"),
+            "SYSTEM_MAINTENANCE_MODE": ("system", "maintenance_mode"),
+        }
+        for env_key, (section, field) in env_overrides.items():
+            val = os.getenv(env_key)
+            if val is not None:
+                raw[section][field] = val.lower() in ("true", "1", "yes")
+
         return ProfitConfig.model_validate(raw)
 
     @property

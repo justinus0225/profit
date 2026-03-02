@@ -117,73 +117,172 @@ docker compose down -v
 
 ## Stage 1: CI 검증 + 백테스트 (로컬, 오프라인)
 
-LLM API 키 없이 로컬에서 전략 성과를 검증한다.
+LLM API 키 없이 로컬에서 전략 성과를 검증한다. Docker, 거래소 API, LLM 모두 불필요.
+
+### 필요 항목
+
+| 항목 | 필수 여부 | 용도 |
+|------|----------|------|
+| Python 3.12+ | 필수 | 런타임 |
+| 인터넷 연결 | 데이터 다운로드 시 1회만 | ccxt로 과거 OHLCV 다운로드 |
+| 거래소 API 키 | **불필요** | ccxt 공개 API 사용 |
+| LLM API 키 | **불필요** | 규칙 기반 전략 사용 |
+| Docker | **불필요** | DB/Redis 미사용 |
+
+### 실행 방법
 
 ```bash
+# 1) 가상환경 생성 및 의존성 설치 (최초 1회)
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 
-# 1) 과거 데이터 다운로드 (1회, 네트워크 필요, API 키 불필요)
+# 2) 과거 OHLCV 데이터 다운로드 (네트워크 필요, 1회만)
+#    data/ohlcv/ 디렉토리에 CSV 파일로 저장된다
 python scripts/download_ohlcv.py --symbol BTC/USDT --timeframe 1h --days 180
 python scripts/download_ohlcv.py --symbol ETH/USDT --timeframe 1h --days 180
 
-# 2) 백테스트 실행 (오프라인, LLM 불필요)
+# 3) 백테스트 실행 (오프라인 가능)
+#    단일 전략 테스트
 python scripts/run_backtest.py --data data/ohlcv/BTC_USDT_1h.csv --strategy combined
+
+#    전체 5개 전략 비교
 python scripts/run_backtest.py --data data/ohlcv/BTC_USDT_1h.csv --all-strategies
 
-# 3) 단위 테스트
+#    옵션 조정
+python scripts/run_backtest.py \
+  --data data/ohlcv/BTC_USDT_1h.csv \
+  --strategy trend_following \
+  --balance 50000 \
+  --commission 0.001 \
+  --position-pct 0.30
+
+# 4) 단위 테스트
+pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-**Stage Gate 통과 기준** (자동 판정):
+### 백테스트 전략 종류
 
-| 지표 | 기준 |
-|------|------|
-| Sharpe Ratio | > 1.0 |
-| MDD (최대 낙폭) | < -20% |
-| Win Rate (승률) | > 50% |
-| Profit Factor (손익비) | > 1.5 |
+| 전략 | 설명 | 핵심 지표 |
+|------|------|----------|
+| `mean_reversion` | RSI 과매도/과매수 반전 | RSI(14) |
+| `trend_following` | MA 골든크로스/데드크로스 | SMA(20), SMA(50) |
+| `momentum` | 가격 변화율 추종 | ROC(12) |
+| `breakout` | 20-bar 고점 돌파 + ATR 손절 | High(20), ATR(14) |
+| `combined` | RSI + MA + Volume 복합 신호 | RSI + SMA + Volume ratio |
+
+### Stage Gate 통과 기준 (자동 판정)
+
+| 지표 | 기준 | 설명 |
+|------|------|------|
+| Sharpe Ratio | > 1.0 | 위험 대비 수익률 |
+| MDD (최대 낙폭) | < 20% | 최대 자산 하락 폭 |
+| Win Rate (승률) | > 50% | 수익 거래 비율 |
+| Profit Factor (손익비) | > 1.5 | 총 이익 / 총 손실 |
+
+백테스트 실행 후 4개 지표에 대한 PASS/FAIL이 자동 출력된다. 모두 PASS 시 Stage 2 진행 가능.
+
+---
 
 ## Stage 2: Paper Trading (로컬 디버깅)
 
-실시간 데이터 + 가상 체결로 에이전트 동작을 확인한다.
+실시간 데이터 + 가상 체결로 에이전트 전체를 가동하여 동작을 확인한다. **실제 자금은 사용되지 않는다.**
 
-**필요 항목**:
-- 거래소 API 키 (읽기 전용 가능)
-- LLM API 키 (최소 1개: Claude 권장)
-- Docker (TimescaleDB, Redis)
+### 필요 항목
+
+| 항목 | 필수 여부 | 용도 |
+|------|----------|------|
+| Python 3.12+ | 필수 | 런타임 |
+| Docker & Docker Compose | 필수 | TimescaleDB, Redis 실행 |
+| 거래소 API 키 | 필수 | 실시간 시세 조회 (읽기 전용 가능) |
+| LLM API 키 | 필수 (최소 1개) | 에이전트 분석/판단 (Claude 권장) |
+| 인터넷 연결 | 필수 | 실시간 데이터 + LLM API 호출 |
+
+### 설정 방법
 
 ```bash
-# .env.local
-SYSTEM_PAPER_TRADING_MODE=true
-SYSTEM_TRADING_ENABLED=true
-EXCHANGE_API_KEY=<your_key>
-EXCHANGE_API_SECRET=<your_secret>
-CLAUDE_API_KEY=<your_claude_key>
+# 1) .env 파일 생성
+cp .env.example .env
+```
 
-# 실행
+`.env` 파일을 편집하여 아래 항목을 설정한다:
+
+```bash
+# ── 필수: 거래소 API (읽기 전용 권한이면 충분) ──
+EXCHANGE_API_KEY=your_binance_api_key
+EXCHANGE_API_SECRET=your_binance_api_secret
+
+# ── 필수: LLM API (최소 1개) ──
+CLAUDE_API_KEY=your_claude_api_key
+
+# ── 시스템 제어: Paper Trading 모드 ──
+SYSTEM_PAPER_TRADING_MODE=true    # 가상 체결 (실제 주문 X)
+SYSTEM_TRADING_ENABLED=true       # 매매 로직 활성화
+
+# ── 인프라 비밀번호 (기본값 사용 가능) ──
+POSTGRES_PASSWORD=profit_dev_password
+REDIS_PASSWORD=profit_dev_password
+```
+
+> `SYSTEM_PAPER_TRADING_MODE=true` 설정 시 ccxt sandbox 모드가 활성화되어 거래소에 실제 주문이 전송되지 않는다. `.env` 환경 변수가 `config/default.yml`보다 우선 적용된다.
+
+### 실행 방법
+
+```bash
+# 가상환경 활성화
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# 시스템 시작 (Docker 인프라 + uvicorn 자동 실행)
 ./scripts/start.sh dev
 ```
 
-확인 사항:
-- 에이전트 간 Redis Pub/Sub 통신 정상
-- 합의 프로토콜 (2-of-3 Quorum) 동작
-- 데이터 수집 파이프라인 안정성
-- Grafana 대시보드 메트릭 수집
+`start.sh dev`는 다음을 순서대로 수행한다:
+1. `.env` 파일의 환경 변수를 로드
+2. Docker로 TimescaleDB, Redis, Prometheus, Grafana 시작
+3. 서비스 헬스체크 (Redis PONG, TimescaleDB pg_isready)
+4. `uvicorn src.main:app --reload` 로 애플리케이션 시작
 
-## Paper Trading (모의 매매)
-
-기본적으로 **Paper Trading 모드**가 활성화되어 있다. 실제 자금 없이 시스템 동작을 확인할 수 있다.
+수동으로 실행하려면:
 
 ```bash
-# .env
-SYSTEM_PAPER_TRADING_MODE=true   # 모의 매매 모드
-SYSTEM_TRADING_ENABLED=false     # 매매 비활성화 (true로 변경 시 활성화)
+# 인프라만 Docker로
+docker compose up -d timescaledb redis prometheus grafana
+
+# .env 변수 로드 후 애플리케이션 시작
+set -a && source .env && set +a
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-실제 매매를 시작하려면:
-1. `.env`에서 `SYSTEM_PAPER_TRADING_MODE=false` 설정
-2. `SYSTEM_TRADING_ENABLED=true` 설정
-3. 거래소 API 키에 매매 권한이 있는지 확인
+### 동작 확인
+
+시스템 시작 후 아래 항목을 확인한다:
+
+```bash
+# 헬스체크
+curl http://localhost:8000/health
+
+# 기대 응답:
+# {"status":"ok","paper_trading":true,"trading_enabled":true,"agents":9,...}
+```
+
+| 확인 항목 | 방법 |
+|----------|------|
+| 시스템 상태 | `GET /health` — `paper_trading: true` 확인 |
+| API 문서 | http://localhost:8000/docs (Swagger UI) |
+| 에이전트 동작 | 로그에서 `Agents started: 9` 확인 |
+| Redis 통신 | Grafana 또는 로그에서 Pub/Sub 이벤트 확인 |
+| Grafana 대시보드 | http://localhost:3001 (admin / `GRAFANA_PASSWORD`) |
+| Prometheus 메트릭 | http://localhost:8000/metrics |
+
+### 시스템 중지
+
+```bash
+./scripts/stop.sh
+# 또는
+docker compose down
+```
 
 ## Project Structure
 

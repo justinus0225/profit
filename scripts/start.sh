@@ -32,6 +32,13 @@ if ! command -v docker &>/dev/null; then
 fi
 
 if [ "$MODE" = "dev" ]; then
+    # .env 파일의 환경 변수를 현재 셸에 export (uvicorn 프로세스에 전달)
+    echo "[0/4] Loading .env variables..."
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+
     echo "[1/4] Starting infrastructure (TimescaleDB, Redis, Prometheus, Grafana)..."
     docker compose up -d timescaledb redis prometheus grafana
 
