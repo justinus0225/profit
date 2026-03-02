@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.agents.base import BaseAgent
+from src.agents.risk.circuit_breaker import CircuitBreaker
+from src.agents.risk.limits import RiskLimits
 from src.core.llm.client import Message, Role
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,10 @@ class RiskManagerAgent(BaseAgent):
         self._daily_realized_pnl: float = 0.0
         self._total_realized_pnl: float = 0.0
         self._positions: list[dict[str, Any]] = []
+
+        # 모듈 초기화
+        self._limits = RiskLimits(self._risk_cfg, self._fund_cfg)
+        self._circuit_breaker = CircuitBreaker(self._risk_cfg)
 
         # 이벤트 구독
         await self._subscribe("quant:signal", self._on_signal_received)
@@ -116,7 +122,10 @@ class RiskManagerAgent(BaseAgent):
             "symbol": pos.get("symbol"),
             "position_id": pos.get("position_id"),
             "price": pos.get("current_price"),
-            "profit_pct": (pos.get("current_price", 0) - pos.get("entry_price", 0)) / max(pos.get("entry_price", 1), 1),
+            "profit_pct": (
+                (pos.get("current_price", 0) - pos.get("entry_price", 0))
+                / max(pos.get("entry_price", 1), 1)
+            ),
             "position_quantity": pos.get("quantity", 0),
         })
 
@@ -151,80 +160,37 @@ class RiskManagerAgent(BaseAgent):
 
         try:
             result = json.loads(response.content)
-            old_score = self._risk_score
+            old_level = self._risk_level
             self._risk_score = result.get("risk_score", self._risk_score)
-            self._risk_level = self._score_to_level(self._risk_score)
+            self._risk_level = self._limits.score_to_level(self._risk_score)
 
-            if self._score_to_level(old_score) != self._risk_level:
+            if old_level != self._risk_level:
                 await self._publish("risk:level_changed", {
                     "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-                    "previous_level": self._score_to_level(old_score),
+                    "previous_level": old_level,
                     "new_level": self._risk_level,
                     "risk_score": self._risk_score,
-                    "utilization_ratio": self._get_utilization(),
+                    "utilization_ratio": self._limits.get_utilization(self._risk_level),
                 })
         except json.JSONDecodeError:
             logger.warning("[%s] LLM returned non-JSON for risk eval", self.name)
 
-    def _score_to_level(self, score: int) -> str:
-        levels = self._risk_cfg.levels
-        if score <= levels.low_max:
-            return "low"
-        if score <= levels.medium_max:
-            return "medium"
-        if score <= levels.high_max:
-            return "high"
-        return "critical"
-
-    def _get_utilization(self) -> float:
-        util = self._risk_cfg.utilization
-        level = self._risk_level
-        if level == "low":
-            return util.low
-        if level == "medium":
-            return util.medium
-        if level == "high":
-            return util.high
-        return 0.0  # critical → 투자 중단
-
-    def _calculate_available_capital(self, total_balance: float) -> float:
-        """투자 가능 자본 계산."""
-        reserve = total_balance * self._fund_cfg.reserve_ratio
-        available = total_balance - reserve
-        return available * self._get_utilization()
-
-    # ── 신호 검증 (거부권) ──
-
-    def _check_veto_conditions(self, signal: dict[str, Any]) -> tuple[bool, str]:
-        """거부권 조건 체크. (True, reason) → 거부."""
-        # 일일 손실 한도 초과
-        if self._daily_realized_pnl <= self._risk_cfg.daily_loss_limit:
-            return True, "Daily loss limit exceeded"
-
-        # 총 손실 한도 초과
-        if self._total_realized_pnl <= self._risk_cfg.total_loss_limit:
-            return True, "Total loss limit exceeded"
-
-        # 연속 손실 초과
-        if self._consecutive_losses >= self._risk_cfg.max_consecutive_losses:
-            return True, f"Consecutive losses: {self._consecutive_losses}"
-
-        # 리스크 레벨 Critical
-        if self._risk_level == "critical":
-            return True, "Risk level is CRITICAL"
-
-        # 단일 포지션 한도 (max_single_position)
-        max_coins = self._fund_cfg.max_concurrent_coins
-        if len(self._positions) >= max_coins and signal.get("direction") == "BUY":
-            return True, f"Max concurrent coins ({max_coins}) reached"
-
-        return False, ""
-
     # ── 이벤트 핸들러 ──
+
+    def _build_risk_state(self) -> dict[str, Any]:
+        """현재 리스크 상태를 dict로 구성한다."""
+        return {
+            "risk_level": self._risk_level,
+            "consecutive_losses": self._consecutive_losses,
+            "daily_realized_pnl": self._daily_realized_pnl,
+            "total_realized_pnl": self._total_realized_pnl,
+            "positions_count": len(self._positions),
+        }
 
     async def _on_signal_received(self, data: dict[str, Any]) -> None:
         """퀀트 신호 수신 → 리스크 검증."""
-        vetoed, reason = self._check_veto_conditions(data)
+        state = self._build_risk_state()
+        vetoed, reason = self._limits.check_veto(data, state)
         if vetoed:
             await self._publish("risk:rejected", {
                 "signal_id": data.get("signal_id"),
@@ -240,12 +206,13 @@ class RiskManagerAgent(BaseAgent):
                 "risk_score": self._risk_score,
                 "max_position_size_usd": self._fund_cfg.max_single_position,
                 "veto_flag": False,
-                "utilization_ratio": self._get_utilization(),
+                "utilization_ratio": self._limits.get_utilization(self._risk_level),
             })
 
     async def _on_consensus_check(self, data: dict[str, Any]) -> None:
         """오케스트레이터 합의 검증 요청."""
-        vetoed, reason = self._check_veto_conditions(data)
+        state = self._build_risk_state()
+        vetoed, reason = self._limits.check_veto(data, state)
         await self._publish("risk:approval_response", {
             "signal_id": data.get("signal_id"),
             "approval": not vetoed,
@@ -253,7 +220,7 @@ class RiskManagerAgent(BaseAgent):
             "risk_score": self._risk_score,
             "risk_level": self._risk_level,
             "rejection_reason": reason if vetoed else "",
-            "utilization_ratio": self._get_utilization(),
+            "utilization_ratio": self._limits.get_utilization(self._risk_level),
         })
 
     async def _on_position_update(self, data: dict[str, Any]) -> None:

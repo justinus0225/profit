@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from src.api.routes import agents, config, dashboard, signals, system, trading
 from src.api.websocket.handlers import router as ws_router
 from src.api.websocket.manager import RedisBridge, ws_manager
-from src.core.boot import BootSequenceManager, BootStatus
+from src.core.boot_sequence import BootSequenceManager, BootStatus
 from src.core.config import ConfigManager, ProfitConfig
 from src.core.llm.router import LLMRouter
 

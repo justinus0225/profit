@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.core.tca import PostTradeAnalysis, PreTradeAnalysis, TCAModule
+from src.exchange.tca import PostTradeAnalysis, PreTradeAnalysis, TCAModule
 
 
 class TestPreTradeAnalysis:

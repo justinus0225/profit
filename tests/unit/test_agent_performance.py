@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.core.agent_performance import (
+from src.tracking.agent_performance import (
     DEFAULT_WEIGHT,
     MAX_WEIGHT,
     MIN_WEIGHT,

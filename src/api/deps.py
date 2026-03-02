@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import redis.asyncio as aioredis
 
-    from src.core.boot import BootStatus
+    from src.core.boot_sequence import BootStatus
     from src.core.config import ProfitConfig
     from src.core.llm.router import LLMRouter
 
