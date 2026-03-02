@@ -115,6 +115,61 @@ docker compose down
 docker compose down -v
 ```
 
+## Stage 1: CI 검증 + 백테스트 (로컬, 오프라인)
+
+LLM API 키 없이 로컬에서 전략 성과를 검증한다.
+
+```bash
+pip install -e .
+
+# 1) 과거 데이터 다운로드 (1회, 네트워크 필요, API 키 불필요)
+python scripts/download_ohlcv.py --symbol BTC/USDT --timeframe 1h --days 180
+python scripts/download_ohlcv.py --symbol ETH/USDT --timeframe 1h --days 180
+
+# 2) 백테스트 실행 (오프라인, LLM 불필요)
+python scripts/run_backtest.py --data data/ohlcv/BTC_USDT_1h.csv --strategy combined
+python scripts/run_backtest.py --data data/ohlcv/BTC_USDT_1h.csv --all-strategies
+
+# 3) 단위 테스트
+pytest tests/ -v
+```
+
+**Stage Gate 통과 기준** (자동 판정):
+
+| 지표 | 기준 |
+|------|------|
+| Sharpe Ratio | > 1.0 |
+| MDD (최대 낙폭) | < -20% |
+| Win Rate (승률) | > 50% |
+| Profit Factor (손익비) | > 1.5 |
+
+## Stage 2: Paper Trading (로컬 디버깅)
+
+실시간 데이터 + 가상 체결로 에이전트 동작을 확인한다.
+
+**필요 항목**:
+- 거래소 API 키 (읽기 전용 가능)
+- LLM API 키 (최소 1개: Claude 권장)
+- Docker (TimescaleDB, Redis)
+
+```bash
+# .env.local
+SYSTEM_PAPER_TRADING_MODE=true
+SYSTEM_TRADING_ENABLED=true
+EXCHANGE_API_KEY=<your_key>
+EXCHANGE_API_SECRET=<your_secret>
+CLAUDE_API_KEY=<your_claude_key>
+
+# 실행
+./scripts/start.sh dev
+```
+
+확인 사항:
+- 에이전트 간 Redis Pub/Sub 통신 정상
+- 합의 프로토콜 (2-of-3 Quorum) 동작
+- 데이터 수집 파이프라인 안정성
+- Grafana 대시보드 메트릭 수집
+
 ## Paper Trading (모의 매매)
 
 기본적으로 **Paper Trading 모드**가 활성화되어 있다. 실제 자금 없이 시스템 동작을 확인할 수 있다.
