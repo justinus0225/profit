@@ -160,6 +160,44 @@ class ExchangeClient:
         except ccxt_async.BaseError as e:
             raise ExchangeError(str(e)) from e
 
+    async def fetch_tickers(
+        self,
+        symbols: list[str] | None = None,
+        agent_name: str = "analyst",
+    ) -> dict[str, Ticker]:
+        """전체(또는 지정) 심볼의 현재가를 일괄 조회한다."""
+        exchange = self._ensure_exchange()
+        if not await self._rate_limiter.acquire(agent_name, weight=5):
+            raise ExchangeError("Rate limit exceeded for tickers fetch")
+
+        try:
+            raw_tickers = await exchange.fetch_tickers(symbols)
+            result: dict[str, Ticker] = {}
+            for sym, raw in raw_tickers.items():
+                ts = raw.get("timestamp")
+                if ts is None:
+                    continue
+                result[sym] = Ticker(
+                    symbol=raw["symbol"],
+                    timestamp=datetime.fromtimestamp(ts / 1000, tz=timezone.utc),
+                    last=raw.get("last", 0),
+                    bid=raw.get("bid"),
+                    ask=raw.get("ask"),
+                    bid_volume=raw.get("bidVolume"),
+                    ask_volume=raw.get("askVolume"),
+                    open=raw.get("open"),
+                    high=raw.get("high"),
+                    low=raw.get("low"),
+                    close=raw.get("close"),
+                    volume=raw.get("baseVolume"),
+                    change=raw.get("change"),
+                    percentage=raw.get("percentage"),
+                    quote_volume=raw.get("quoteVolume"),
+                )
+            return result
+        except ccxt_async.BaseError as e:
+            raise ExchangeError(str(e)) from e
+
     # ── 잔고 조회 ──
 
     async def fetch_balance(self, agent_name: str = "executor") -> ExchangeBalance:

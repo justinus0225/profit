@@ -12,13 +12,16 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 import redis.asyncio as aioredis
 
 from src.core.config import ProfitConfig
 from src.core.llm.client import LLMResponse, Message
 from src.core.llm.router import LLMRouter
+
+if TYPE_CHECKING:
+    from src.exchange.client import ExchangeClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +50,13 @@ class BaseAgent(ABC):
         config: ProfitConfig,
         llm_router: LLMRouter,
         redis_client: aioredis.Redis,
+        exchange_client: ExchangeClient | None = None,
     ) -> None:
         self.name = name
         self._config = config
         self._llm_router = llm_router
         self._redis = redis_client
+        self._exchange_client = exchange_client
         self._status = AgentStatus.INITIALIZING
         self._started_at: float | None = None
         self._last_heartbeat: float = 0.0

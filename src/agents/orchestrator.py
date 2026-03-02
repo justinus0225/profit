@@ -150,14 +150,21 @@ class OrchestratorAgent(BaseAgent):
         analyst_vote = round_.analyst_vote
         risk_vote = round_.risk_vote
 
+        analyst_direction = (
+            analyst_vote.data.get("market_direction_score", 0) if analyst_vote else 0
+        )
+        risk_level = (
+            risk_vote.data.get("risk_level", "unknown") if risk_vote else "unknown"
+        )
+
         user_prompt = (
             f"Signal: {signal.get('symbol')} {signal.get('direction')} "
             f"(score={signal.get('signal_score')})\n"
             f"Quant approval: YES\n"
             f"Analyst approval: {'YES' if analyst_vote and analyst_vote.approved else 'NO'} "
-            f"(direction={analyst_vote.data.get('market_direction_score', 0):.2f if analyst_vote else 0})\n"
+            f"(direction={analyst_direction:.2f})\n"
             f"Risk approval: {'YES' if risk_vote and risk_vote.approved else 'NO'} "
-            f"(level={risk_vote.data.get('risk_level', 'unknown') if risk_vote else 'unknown'})\n"
+            f"(level={risk_level})\n"
             f"Cosine similarity: {round_.cosine_similarity:.2f}\n"
             f"Consensus votes: {round_.vote_count}/{self._signal_cfg.consensus_quorum}\n"
             f"Risk veto: {round_.risk_veto}\n\n"

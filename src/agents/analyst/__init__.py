@@ -53,7 +53,7 @@ class AnalystAgent(BaseAgent):
         self._macro = MacroAnalyzer(self._event_cfg)
         self._micro = MicroAnalyzer(self._screening_cfg)
         self._sentiment = SentimentAnalyzer()
-        self._screener = CoinScreener(self._screening_cfg)
+        self._screener = CoinScreener(self._screening_cfg, self._exchange_client)
 
         await self._subscribe(
             "orchestrator:analysis_request", self._on_analysis_request

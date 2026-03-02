@@ -34,6 +34,9 @@ class QuantAgent(BaseAgent):
         self._signal_cfg = self._config.signal
         self._schedule_cfg = self._config.schedule.quant
 
+        if self._exchange_client is None:
+            logger.warning("[%s] No exchange client — indicators will be empty", self.name)
+
         # 모듈 초기화
         self._indicators = IndicatorEngine(self._strategy_cfg)
         self._signal_gen = SignalGenerator(self._signal_cfg, self._strategy_cfg)
@@ -74,6 +77,20 @@ class QuantAgent(BaseAgent):
 
             await asyncio.sleep(10)
 
+    # ── OHLCV → 지표 계산 ──
+
+    async def _compute_indicators(
+        self, symbol: str, timeframe: str
+    ) -> dict[str, Any]:
+        """거래소에서 OHLCV를 조회하고 기술적 지표를 계산한다."""
+        if self._exchange_client is None:
+            return await self._indicators.compute([], symbol, timeframe)
+
+        ohlcv = await self._exchange_client.fetch_ohlcv(
+            symbol, timeframe=timeframe, limit=200, agent_name=self.name,
+        )
+        return await self._indicators.compute(ohlcv, symbol, timeframe)
+
     # ── 스캔 루틴 ──
 
     async def _fast_scan(self) -> None:
@@ -81,7 +98,7 @@ class QuantAgent(BaseAgent):
         logger.info("[%s] Fast scan (%d symbols)", self.name, len(self._watchlist))
         for coin in self._watchlist:
             try:
-                indicators = await self._indicators.compute(coin["symbol"], "1h")
+                indicators = await self._compute_indicators(coin["symbol"], "1h")
                 if indicators and self._indicators.exceeds_threshold(indicators):
                     await self._generate_signal(coin, indicators, "fast")
             except Exception:
@@ -96,7 +113,7 @@ class QuantAgent(BaseAgent):
             try:
                 indicators_multi = {}
                 for tf in ("1h", "4h", "1d"):
-                    indicators_multi[tf] = await self._indicators.compute(
+                    indicators_multi[tf] = await self._compute_indicators(
                         coin["symbol"], tf
                     )
 
@@ -151,7 +168,7 @@ class QuantAgent(BaseAgent):
             self.name, symbol, data.get("change_pct", 0) * 100,
         )
         coin = {"symbol": symbol, "coin_id": data.get("coin_id")}
-        indicators = await self._indicators.compute(symbol, "5m")
+        indicators = await self._compute_indicators(symbol, "5m")
         if indicators:
             await self._generate_signal(coin, indicators, "rapid")
         await self._publish("quant:rapid_analysis", {
@@ -170,7 +187,7 @@ class QuantAgent(BaseAgent):
         coin = {"symbol": symbol, "coin_id": data.get("coin_id")}
         indicators_multi = {}
         for tf in ("1h", "4h", "1d"):
-            indicators_multi[tf] = await self._indicators.compute(symbol, tf)
+            indicators_multi[tf] = await self._compute_indicators(symbol, tf)
         signal = await self._signal_gen.analyze(
             coin, indicators_multi, self._llm_chat
         )
