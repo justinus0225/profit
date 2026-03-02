@@ -1,0 +1,150 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Open Positions",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "profit_positions_open", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}] } }
+      }
+    },
+    {
+      "title": "Portfolio PnL %",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [
+        { "expr": "profit_portfolio_pnl_pct", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 0}, {"color": "green", "value": 1}] } }
+      }
+    },
+    {
+      "title": "Risk Level",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [
+        { "expr": "profit_risk_level", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "min": 0, "max": 100, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 30}, {"color": "orange", "value": 60}, {"color": "red", "value": 80}] } }
+      }
+    },
+    {
+      "title": "Daily Loss %",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "profit_daily_loss_pct", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": -1}, {"color": "red", "value": -3}] } }
+      }
+    },
+    {
+      "title": "Signals Generated (Rate)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "targets": [
+        { "expr": "rate(profit_signals_generated_total[1h])", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Agent Errors",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [
+        { "expr": "sum(rate(profit_agent_errors_total[5m]))", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}] } }
+      }
+    },
+    {
+      "title": "Orders by Status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "rate(profit_orders_total[5m])", "legendFormat": "{{side}} {{status}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Order Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, rate(profit_order_latency_seconds_bucket[5m]))", "legendFormat": "p95", "refId": "A" },
+        { "expr": "histogram_quantile(0.50, rate(profit_order_latency_seconds_bucket[5m]))", "legendFormat": "p50", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "title": "LLM Call Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "rate(profit_llm_calls_total[5m])", "legendFormat": "{{provider}} {{status}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "LLM Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, rate(profit_llm_latency_seconds_bucket[5m]))", "legendFormat": "p95 {{provider}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "title": "Exchange API Calls",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        { "expr": "rate(profit_exchange_api_calls_total[5m])", "legendFormat": "{{method}} {{status}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Agent Events Processed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        { "expr": "rate(profit_agent_events_processed_total[5m])", "legendFormat": "{{agent_name}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Circuit Breaker Trips",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "targets": [
+        { "expr": "increase(profit_circuit_breaker_trips_total[1h])", "legendFormat": "{{trigger}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Data Quality",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "targets": [
+        { "expr": "rate(profit_data_anomalies_total[5m])", "legendFormat": "anomalies {{symbol}}", "refId": "A" },
+        { "expr": "rate(profit_data_quality_checks_total[5m])", "legendFormat": "checks {{result}}", "refId": "B" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["profit", "trading"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "P.R.O.F.I.T. Overview",
+  "uid": "profit-overview",
+  "version": 1
+}

@@ -21,6 +21,7 @@ from fastapi import FastAPI
 
 from src.agents.analyst import AnalystAgent
 from src.agents.base import BaseAgent
+from src.agents.developer import SoftwareEngineerAgent
 from src.agents.engineer import DataEngineerAgent
 from src.agents.executor.engine import ExecutorAgent
 from src.agents.orchestrator import OrchestratorAgent
@@ -28,7 +29,11 @@ from src.agents.portfolio.manager import PortfolioManagerAgent
 from src.agents.qa import QAAgent
 from src.agents.quant import QuantAgent
 from src.agents.risk.manager import RiskManagerAgent
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from starlette.responses import Response
+
 from src.api.routes import agents, config, dashboard, signals, system, trading
+from src.core.metrics import SYSTEM_INFO
 from src.api.websocket.handlers import router as ws_router
 from src.api.websocket.manager import RedisBridge, ws_manager
 from src.core.boot_sequence import BootSequenceManager, BootStatus
@@ -118,6 +123,13 @@ async def lifespan(app: FastAPI):  # noqa: ANN201
     bridge_redis = aioredis.from_url(redis_url, decode_responses=True)
     _bridge_task = asyncio.create_task(_redis_bridge.start(bridge_redis))
 
+    # 8) Prometheus 시스템 정보 설정
+    SYSTEM_INFO.info({
+        "version": "0.1.0",
+        "exchange": _config.exchange.exchange_id,
+        "paper_trading": str(_config.system.paper_trading_mode),
+    })
+
     logger.info(
         "P.R.O.F.I.T. ready (trading=%s, boot=%s, duration=%dms)",
         _config.system.trading_enabled,
@@ -205,6 +217,10 @@ def _create_agents(
             exchange_client=exchange_client,
             **common,
         ),
+        SoftwareEngineerAgent(
+            name="software_engineer",
+            **common,
+        ),
         QAAgent(
             name="qa",
             **common,
@@ -258,6 +274,12 @@ async def health() -> dict[str, Any]:
         "websocket_connections": ws_manager.connection_count,
         "agents": len(_agents),
     }
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus 메트릭 엔드포인트."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/boot")
