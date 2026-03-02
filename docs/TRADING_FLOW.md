@@ -114,6 +114,8 @@
 | **리스크 관리 (전체 평가)** | 매일 00:00 UTC | 리스크 스코어 전체 재산출. 가용 투자금 한도 재설정 |
 | **포트폴리오 (리밸런싱)** | 매일 00:00 UTC | 보유 코인 비중 점검. 단기 만기 도래 포지션 연장/청산 결정 |
 | **포트폴리오 (성과)** | 매일 09:00 UTC | 전일 매매 성과 리포트 생성. 관리자에게 OpenClaw로 발송 |
+| **퀀트 (WFO 최적화)** | 매주 일요일 00:00 UTC | LIVE 전략 파라미터 Walk-Forward 최적화. 과적합 검증 |
+| **QA (그림자 평가)** | 매일 (evaluation_hour) | SHADOW 전략 승격/강등 평가. 성과 스냅샷 기록 |
 
 ## 2.3. 이벤트 기반 동작 (Event-Driven)
 
@@ -922,4 +924,156 @@
 ├── 매매 실행: BTC 시장가 전량 매도 실행
 ├── 매매일지: "관리자 수동 매도" 기록
 └── 포트폴리오: BTC 포지션 제거, 가용 자금 갱신
+```
+
+---
+
+# 10. 전략 자율 진화 플로우
+
+> **ARCHITECTURE.md Section 14 교차 참조**: 자율 진화 퀀트 아키텍처의 설계 근거 및 모듈 상세
+
+## 10.1. 전략 생명주기 전체 플로우
+
+기존 4개 빌트인 전략 외에 LLM 생성 전략이 자동으로 생성·검증·승격되는 폐쇄 루프.
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  전략 생성 (opt-in, generation_enabled=True 필요)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[QuantAgent] 시장 변동성 낮은 시간대 감지
+  → quant:strategy_generate_request 발행
+
+[SWEngineerAgent] 요청 수신
+  → LLM에 전략 코드 생성 요청 (시장 컨텍스트 + 기존 전략 성과)
+  → 응답에서 ```python 코드 블록 추출
+  → CodeSafetyChecker: AST 분석 + 정규식 보완 검사
+    ├── 위반 발견 → developer:strategy_rejected 발행 (종료)
+    └── 통과 → 제한된 namespace에서 exec()
+  → 함수 시그니처 검증 (closes, highs, lows, volumes)
+  → StrategyRegistry에 CANDIDATE 등록
+  → developer:strategy_generated 발행
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CANDIDATE → SHADOW 전환
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[QuantAgent] developer:strategy_generated 수신
+  → Registry.transition(strategy_name, SHADOW)
+  → quant:strategy_shadow_start 발행
+
+[QAAgent] quant:strategy_shadow_start 수신
+  → ShadowTester.start_shadow(strategy_name) 호출
+  → ForwardTester 인스턴스 할당 (가상 실행 시작)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  매일 그림자 테스트 평가
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[QAAgent] 매일 evaluation_hour UTC
+  → ShadowTester.evaluate_daily() 호출
+  │
+  ├── 승격 조건 충족 (Sharpe≥1.0, WR≥50%, 3일 연속):
+  │   → quant:strategy_promoted 발행
+  │   → [QuantAgent] Registry.transition(name, LIVE)
+  │
+  ├── 강등 조건 충족 (WR<40% or MDD>25%, 2일 연속):
+  │   → quant:strategy_demoted 발행
+  │   → [QuantAgent] Registry.transition(name, DEPRECATED)
+  │
+  └── 변화 없음: 다음 날 재평가
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  LIVE 전략 운영 중
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LIVE 전략은 기존 매매 프로세스에 참여:
+  - 퀀트 스캔 시 시그널 생성 대상
+  - 합의 프로세스 동일 적용
+  - 성과 악화 시 DEPRECATED 전환 가능
+```
+
+## 10.2. 주간 Walk-Forward 최적화 (WFO)
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  매주 일요일 00:00 UTC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[QuantAgent] _run_wfo() 실행
+  │
+  ├── 각 LIVE 전략에 대해:
+  │   │
+  │   ├── 1. OHLCV 데이터 조회 (최근 in_sample + out_sample 기간)
+  │   │
+  │   ├── 2. 롤링 윈도우 생성
+  │   │   ├── IS (In-Sample): 1000 bars → Grid Search
+  │   │   └── OOS (Out-of-Sample): 336 bars → 검증
+  │   │
+  │   ├── 3. 파라미터 조합별 백테스트
+  │   │   Objective = sharpe_ratio - 0.5 × (MDD / 100)
+  │   │   기존 BacktestEngine + SimulatedBroker 재사용
+  │   │
+  │   ├── 4. OOS/IS 비율 검증
+  │   │   ├── ratio ≥ 0.60 → 신뢰 (과적합 아님)
+  │   │   └── ratio < 0.60 → 과적합 (파라미터 업데이트 스킵)
+  │   │
+  │   └── 5. 결과 반영
+  │       ├── is_robust=True → Registry.update_params() 실행
+  │       └── is_robust=False → 기존 파라미터 유지, 로그 기록
+  │
+  └── quant:wfo_completed 발행
+      "WFO 완료: mean_reversion(robust), trend_following(overfit)"
+```
+
+## 10.3. 시장 국면 분류와 전략 가중치 조정
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  퀀트 깊은 분석 시 (매 1시간)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[QuantAgent] _deep_scan() 실행
+  │
+  ├── 1. 기술적 지표 연산 (RSI, MACD, BB, ADX, ATR)
+  │
+  ├── 2. RegimeClassifier.classify({adx, atr})
+  │   ├── ADX ≥ 25 → TRENDING (confidence = adx/50)
+  │   ├── ATR percentile ≥ 75th → VOLATILE
+  │   └── 나머지 → RANGING
+  │
+  ├── 3. quant:regime_classified 발행
+  │   {regime: "trending", confidence: 0.72, adx: 36.0}
+  │
+  └── 4. 코인별 시그널 생성 (기존 로직)
+
+
+[PortfolioManager] quant:regime_classified 수신
+  │
+  ├── 전략 가중치 업데이트:
+  │   TRENDING 예시:
+  │   ├── trend_following: ×1.5 (강화)
+  │   ├── mean_reversion:  ×0.5 (약화)
+  │   ├── momentum:        ×1.2 (소폭 강화)
+  │   └── breakout:        ×0.8 (소폭 약화)
+  │
+  └── 매매 시그널 가중 배분에 반영
+      (같은 코인에 여러 전략 시그널 발생 시 가중 합산)
+```
+
+## 10.4. 전략 진화 24시간 타임라인 (주간 사이클)
+
+```
+월요일~토요일:
+  매 1시간 ── [퀀트] 깊은 분석 시 국면 분류 → 포트폴리오 가중치 조정
+  매일 ────── [QA] SHADOW 전략 일일 평가 → 승격/강등 이벤트
+  비정기 ──── [SWEngineer] 전략 생성 요청 처리 (opt-in)
+
+일요일 00:00 UTC:
+  ──────────── [퀀트] 전체 LIVE 전략 WFO 실행
+               ├── robust 전략: 파라미터 업데이트
+               └── overfit 전략: 파라미터 유지 + 경고 로그
 ```

@@ -163,6 +163,37 @@ class StrategyConfig(BaseModel):
 
 
 # ============================================================
+# 전략 진화 (Strategy Evolution)
+# ============================================================
+
+class WFOScheduleConfig(BaseModel):
+    """Walk-Forward Optimization 스케줄."""
+    day_of_week: int = Field(default=6, ge=0, le=6)  # 0=Monday, 6=Sunday
+    hour_utc: int = Field(default=0, ge=0, le=23)
+    in_sample_hours: int = Field(default=1000, ge=200, le=5000)
+    out_sample_hours: int = Field(default=336, ge=100, le=2000)
+
+
+class ShadowTestConfig(BaseModel):
+    """Shadow Testing 설정."""
+    evaluation_hour_utc: int = Field(default=0, ge=0, le=23)
+    promotion_sharpe_min: float = Field(default=1.5, ge=0.5, le=5.0)
+    promotion_days_min: int = Field(default=7, ge=3, le=30)
+    promotion_win_rate_min: float = Field(default=0.50, ge=0.30, le=0.80)
+    demotion_win_rate_max: float = Field(default=0.40, ge=0.20, le=0.50)
+    demotion_mdd_max: float = Field(default=0.25, ge=0.10, le=0.50)
+    demotion_consecutive_days: int = Field(default=3, ge=1, le=7)
+
+
+class EvolutionConfig(BaseModel):
+    """전략 자율 진화 설정."""
+    max_strategies: int = Field(default=50, ge=10, le=200)
+    generation_enabled: bool = Field(default=False)  # LLM 코드 생성 (opt-in)
+    wfo: WFOScheduleConfig = Field(default_factory=WFOScheduleConfig)
+    shadow: ShadowTestConfig = Field(default_factory=ShadowTestConfig)
+
+
+# ============================================================
 # 포트폴리오 관리 (Portfolio Management)
 # ============================================================
 
@@ -507,6 +538,7 @@ class ProfitConfig(BaseModel):
     llm_memory: LLMMemoryConfig = Field(default_factory=LLMMemoryConfig)
     boot: BootConfig = Field(default_factory=BootConfig)
     db: DBConfig = Field(default_factory=DBConfig)
+    evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     presets: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 

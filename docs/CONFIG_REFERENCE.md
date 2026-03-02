@@ -546,6 +546,68 @@ P13(ARCHITECTURE.md) 참조.
 
 ---
 
+## 2.18. 전략 진화 (`evolution.*`)
+
+자율 진화 퀀트 아키텍처의 핵심 설정값.
+ARCHITECTURE.md Section 14 참조. 전략 생성·최적화·검증·승격/강등의 동작을 제어한다.
+
+### 전략 레지스트리
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `evolution.max_strategies` | 동시 관리 최대 전략 수 | `50` | 10~200 | Normal |
+| `evolution.generation_enabled` | LLM 전략 생성 활성화 (보안 주의) | `false` | true/false | Critical |
+
+### Walk-Forward 최적화 (WFO)
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `evolution.wfo.day_of_week` | WFO 실행 요일 (0=월~6=일) | `6` | 0~6 | Normal |
+| `evolution.wfo.hour_utc` | WFO 실행 시각 (UTC) | `0` | 0~23 | Normal |
+| `evolution.wfo.in_sample_hours` | IS (In-Sample) 기간 (시간) | `1000` | 100~5000 | Caution |
+| `evolution.wfo.out_sample_hours` | OOS (Out-of-Sample) 기간 (시간) | `336` | 50~1000 | Caution |
+
+### 그림자 테스트 (Shadow Testing)
+
+| 키 | 설명 | 기본값 | 범위 | 위험등급 |
+|----|------|--------|------|----------|
+| `evolution.shadow.promotion_sharpe_min` | SHADOW→LIVE 승격 최소 Sharpe | `1.0` | 0.5~3.0 | Caution |
+| `evolution.shadow.promotion_days_min` | 승격 최소 연속 일수 | `3` | 1~14 | Caution |
+| `evolution.shadow.promotion_win_rate_min` | 승격 최소 승률 | `0.50` | 0.30~0.80 | Caution |
+| `evolution.shadow.demotion_win_rate_max` | 강등 승률 하한 (이하 시 강등) | `0.40` | 0.20~0.60 | Caution |
+| `evolution.shadow.demotion_mdd_max` | 강등 MDD 상한 (초과 시 강등) | `0.25` | 0.10~0.50 | Caution |
+| `evolution.shadow.demotion_consecutive_days` | 강등 연속 일수 기준 | `2` | 1~7 | Caution |
+
+### OpenClaw 변경 예시
+
+```
+사용자: "전략 자동 생성 켜줘"
+
+시스템: ⚠️ [Critical 설정 변경]
+  evolution.generation_enabled: false → true
+  영향: LLM이 자동으로 새로운 전략 코드를 생성합니다.
+        생성된 코드는 AST 보안 필터링 후 제한된 환경에서 실행됩니다.
+  정말 변경하시겠습니까? (예/아니오)
+
+사용자: "예"
+
+시스템: ✅ evolution.generation_enabled 변경 완료
+  false → true (적용 시각: 2026-03-02 10:00:00 UTC)
+  LLM 전략 생성이 활성화되었습니다.
+  생성된 전략은 CANDIDATE → SHADOW → LIVE 순서로 검증됩니다.
+```
+
+```
+사용자: "승격 조건 Sharpe 1.5로 강화해"
+
+시스템: ⚠️ [Caution 설정 변경]
+  evolution.shadow.promotion_sharpe_min: 1.0 → 1.5
+  영향: SHADOW 전략이 LIVE로 승격되기 위한 Sharpe 기준이 강화됩니다.
+  정말 변경하시겠습니까? (예/아니오)
+```
+
+---
+
 # 3. OpenClaw 설정 변경 명령어
 
 ## 3.1. 자연어 명령 → 설정 매핑
@@ -612,6 +674,19 @@ P13(ARCHITECTURE.md) 참조.
 | "LLM 비용 한도 100달러로 올려" | `llm.cost.daily_limit_usd = 100` | 변경 완료 |
 | "현재 LLM 설정 보여줘" | 조회 | LLM 현황 테이블 출력 |
 | "LLM 사용량 보여줘" | 조회 | 프로바이더별 호출 수/비용 출력 |
+
+### 전략 진화
+
+| 자연어 명령 | 매핑 키 | 예시 응답 |
+|-------------|---------|-----------|
+| "전략 자동 생성 켜줘" | `evolution.generation_enabled = true` | ⚠️ Critical. LLM 전략 자동 생성 활성화, 확인 요청 |
+| "전략 자동 생성 꺼" | `evolution.generation_enabled = false` | 변경 완료. LLM 전략 생성 비활성화 |
+| "승격 Sharpe 1.5로 올려" | `evolution.shadow.promotion_sharpe_min = 1.5` | 변경 완료. 승격 기준 강화 |
+| "강등 연속 일수 3일로 변경" | `evolution.shadow.demotion_consecutive_days = 3` | 변경 완료 |
+| "WFO 최적화 토요일에 실행" | `evolution.wfo.day_of_week = 5` | 변경 완료 |
+| "현재 전략 목록 보여줘" | 조회 | 전략 레지스트리 현황 출력 |
+| "SHADOW 전략 성과 보여줘" | 조회 | 그림자 테스트 현황 출력 |
+| "현재 시장 국면 보여줘" | 조회 | 국면 분류 결과 + 전략 가중치 출력 |
 
 ### 조회 명령
 
@@ -758,4 +833,5 @@ OpenClaw 조회:
 | LLM 메모리 (`llm_memory.*`) | 8 | 단기/장기 메모리, RAG, 압축 |
 | 부트 시퀀스 (`boot.*`) | 6 | 백필 배수, 워밍업 타임아웃, 자동 활성화 |
 | DB 커넥션 풀링 (`db.pool.*`) | 12 | PgBouncer, SQLAlchemy 풀, 헬스체크 |
-| **합계** | **146** | |
+| 전략 진화 (`evolution.*`) | 10 | 전략 생성 ON/OFF, WFO 스케줄, 승격/강등 기준 |
+| **합계** | **156** | |

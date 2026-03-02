@@ -2031,7 +2031,13 @@ profit/
 │   │   │   ├── indicators.py
 │   │   │   ├── signals.py
 │   │   │   ├── backtest.py
+│   │   │   ├── regime_classifier.py   # ★ 시장 국면 분류기 (ADX+ATR 규칙 기반)
+│   │   │   ├── walk_forward_optimizer.py # ★ Walk-Forward 파라미터 최적화
+│   │   │   ├── shadow_tester.py       # ★ 그림자 테스트 매니저
+│   │   │   ├── strategy_generator.py  # ★ LLM 전략 생성기 (opt-in)
 │   │   │   └── strategies/
+│   │   │       ├── registry.py        # ★ 전략 레지스트리 (생명주기 관리)
+│   │   │       └── builtin.py         # ★ 빌트인 전략 팩토리 (5종)
 │   │   ├── risk/
 │   │   │   ├── manager.py
 │   │   │   ├── limits.py
@@ -2121,3 +2127,288 @@ profit/
         ├── ci.yml                  # Lint + Test + 백테스트
         └── deploy.yml              # Staging → Production 배포
 ```
+
+---
+
+# 14. 자율 진화 퀀트 아키텍처 (Strategy Evolution)
+
+기존 Phase 1~12에서 구현된 고정 전략 기반 트레이딩에 **자율 진화 메커니즘**을 추가한다.
+전략이 자동으로 생성·최적화·검증·승격/강등되는 폐쇄 루프(Closed-Loop)를 구축한다.
+
+## 14.1. 아키텍처 개요
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                 Strategy Evolution Pipeline                       │
+│                                                                   │
+│  ┌─────────────┐    ┌──────────────┐    ┌───────────────┐        │
+│  │  Strategy    │    │  Walk-Forward│    │  Shadow       │        │
+│  │  Generator   │───▶│  Optimizer   │───▶│  Tester       │        │
+│  │  (LLM, opt-in)│   │  (WFO)       │    │  (가상 실행)    │        │
+│  └─────────────┘    └──────────────┘    └───────┬───────┘        │
+│         │                                        │                │
+│         │ CANDIDATE                              │ 승격/강등       │
+│         ▼                                        ▼                │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │              Strategy Registry (생명주기 관리)              │    │
+│  │  CANDIDATE ──▶ SHADOW ──▶ LIVE ──▶ DEPRECATED             │    │
+│  └──────────────────────────────────────────────────────────┘    │
+│                              │                                    │
+│                              ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │           Regime Classifier (시장 국면 분류)                │    │
+│  │  TRENDING / RANGING / VOLATILE → 전략 가중치 동적 조정      │    │
+│  └──────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 핵심 설계 원칙
+
+| 원칙 | 설명 |
+|------|------|
+| **Additive 확장** | 기존 에이전트 이름/역할 변경 없이 서브모듈 추가로 확장 |
+| **Zero 신규 의존성** | 기존 pandas, numpy, pandas-ta만 사용 (HMM은 optional dep) |
+| **보안 우선** | LLM 전략 생성은 `generation_enabled=False` 기본값, AST 필터링 |
+| **기존 인프라 재활용** | BacktestEngine, SimulatedBroker, ForwardTester 직접 재사용 |
+
+---
+
+## 14.2. Strategy Registry — 전략 생명주기 관리
+
+모든 전략(빌트인 + LLM 생성)의 생명주기를 중앙에서 관리하는 레지스트리.
+
+### 14.2.1. 상태 머신
+
+```
+            ┌──────────────────────────────────────────┐
+            │           Strategy Lifecycle              │
+            │                                          │
+            │  CANDIDATE ──────▶ SHADOW ──────▶ LIVE   │
+            │      ▲                              │    │
+            │      │                              │    │
+            │      └──── DEPRECATED ◀─────────────┘    │
+            │                                          │
+            └──────────────────────────────────────────┘
+
+유효한 전이:
+  CANDIDATE → SHADOW   (AST 검증 통과, 그림자 테스트 시작)
+  SHADOW    → LIVE     (승격 조건 충족: Sharpe≥1.0, WR≥50%, N일 연속)
+  SHADOW    → DEPRECATED (강등 조건: WR<40% or MDD>25%, M일 연속)
+  LIVE      → DEPRECATED (성과 악화)
+  DEPRECATED → CANDIDATE (재활성화)
+```
+
+### 14.2.2. StrategyEntry 데이터 구조
+
+```python
+@dataclass
+class StrategyEntry:
+    name: str                          # 고유 이름
+    strategy_fn: Callable | None       # 실행 가능한 전략 함수
+    status: StrategyStatus             # CANDIDATE/SHADOW/LIVE/DEPRECATED
+    parameters: dict                   # 전략 파라미터
+    metrics: dict                      # 성과 메트릭 (win_rate, sharpe, mdd)
+    wfo_results: dict                  # WFO 최적화 결과
+    source: str                        # "builtin" | "llm_generated"
+    shadow_start: datetime | None      # SHADOW 전환 시점
+```
+
+### 14.2.3. 빌트인 전략 (5종)
+
+| 전략 | 팩토리 함수 | WFO 파라미터 그리드 |
+|------|------------|---------------------|
+| **평균 회귀** | `create_mean_reversion_strategy()` | rsi_oversold: [25,30,35], rsi_overbought: [65,70,75] |
+| **추세 추종** | `create_trend_following_strategy()` | ma_short: [10,20,30], ma_long: [40,50,60] |
+| **모멘텀** | `create_momentum_strategy()` | roc_period: [5,10,14], roc_threshold: [2,3,5] |
+| **브레이크아웃** | `create_breakout_strategy()` | lookback: [14,20,30], atr_multiplier: [1.5,2.0,2.5] |
+| **복합** | `create_combined_strategy()` | rsi_oversold: [25,30], ma_short: [10,20] |
+
+---
+
+## 14.3. Walk-Forward Optimizer (WFO) — 파라미터 자동 최적화
+
+과적합(Overfitting)을 방지하는 롤링 윈도우 기반 파라미터 최적화.
+
+### 14.3.1. 동작 원리
+
+```
+전체 데이터
+├──────────────────────────────────────────────────────┤
+│                                                      │
+│  Window 1:                                           │
+│  ┌────── IS ──────┐┌── OOS ──┐                      │
+│  │  in-sample     ││out-sample│                      │
+│  │  Grid Search   ││  검증    │                      │
+│  └────────────────┘└─────────┘                      │
+│                                                      │
+│  Window 2:                                           │
+│       ┌────── IS ──────┐┌── OOS ──┐                 │
+│       │  in-sample     ││out-sample│                 │
+│       │  Grid Search   ││  검증    │                 │
+│       └────────────────┘└─────────┘                 │
+│                                                      │
+│  Window 3:                                           │
+│            ┌────── IS ──────┐┌── OOS ──┐            │
+│            └────────────────┘└─────────┘            │
+
+IS: 파라미터 최적화 구간 (기본 1000 bars)
+OOS: 미래 데이터 검증 구간 (기본 336 bars = 2주)
+Step: 윈도우 이동 간격 (기본 168 bars = 1주)
+```
+
+### 14.3.2. 과적합 탐지
+
+| 메트릭 | 계산 | 판정 |
+|--------|------|------|
+| **OOS/IS Ratio** | OOS 스코어 / IS 스코어 | < 0.60 → 과적합 |
+| **Overfit Ratio** | 과적합 윈도우 수 / 전체 윈도우 수 | > 0.50 → 전략 비신뢰 |
+| **Objective** | `sharpe_ratio - 0.5 × (max_drawdown_pct / 100)` | 수익과 리스크 균형 |
+
+### 14.3.3. 실행 스케줄
+
+- **주기**: 매주 일요일 UTC 00:00
+- **대상**: 모든 LIVE 전략
+- **결과**: `is_robust=True`인 경우에만 파라미터 업데이트 (in-place)
+
+---
+
+## 14.4. Shadow Tester — 그림자 테스트
+
+SHADOW 전략을 실자금 투입 없이 가상으로 실행하여 성과를 측정하는 시스템.
+
+### 14.4.1. 승격/강등 조건
+
+**승격 (SHADOW → LIVE)**:
+
+| 조건 | 기본값 | 설명 |
+|------|--------|------|
+| Sharpe Ratio ≥ | 1.0 | 리스크 대비 수익 |
+| 연속 일수 ≥ | 3일 | 일관된 성과 |
+| Win Rate ≥ | 50% | 승률 |
+
+**강등 (SHADOW/LIVE → DEPRECATED)**:
+
+| 조건 | 기본값 | 설명 |
+|------|--------|------|
+| Win Rate < | 40% | 낮은 승률 |
+| MDD > | 25% | 과도한 낙폭 |
+| 연속 일수 ≥ | 2일 | 지속적 악화 |
+
+### 14.4.2. QA 에이전트 통합
+
+QA 에이전트가 그림자 테스트 관리를 담당한다:
+
+```
+[매일 evaluation_hour UTC]
+QA Agent → ShadowTester.evaluate_daily()
+  ├── 승격 대상 발견 → quant:strategy_promoted 이벤트 발행
+  ├── 강등 대상 발견 → quant:strategy_demoted 이벤트 발행
+  └── QA 리포트에 shadow_test 섹션 추가
+```
+
+---
+
+## 14.5. Regime Classifier — 시장 국면 분류
+
+현재 시장 상태를 3가지 국면으로 분류하여 전략별 가중치를 동적으로 조정한다.
+
+### 14.5.1. 분류 규칙 (Phase 1: 규칙 기반)
+
+```
+ADX ≥ 25 → TRENDING   (confidence = min(adx/50, 1.0))
+ATR percentile ≥ 75th → VOLATILE  (ATR lookback=100)
+나머지 → RANGING       (confidence = 0.7)
+```
+
+### 14.5.2. 국면별 전략 가중치
+
+| 국면 | trend_following | mean_reversion | momentum | breakout |
+|------|----------------|----------------|----------|----------|
+| **TRENDING** | 1.5 | 0.5 | 1.2 | 0.8 |
+| **RANGING** | 0.5 | 1.5 | 0.8 | 0.7 |
+| **VOLATILE** | 0.8 | 0.8 | 0.6 | 1.4 |
+
+포트폴리오 관리 에이전트가 `quant:regime_classified` 이벤트를 구독하여
+전략 가중치를 동적으로 조정한다.
+
+### 14.5.3. 향후 확장 (Phase 2: HMM 기반)
+
+`hmmlearn`, `scikit-learn`, `scipy`를 optional dependency로 추가하여
+Hidden Markov Model 기반 확률적 국면 분류로 업그레이드 가능.
+`[project.optional-dependencies] ml = [...]`로 관리.
+
+---
+
+## 14.6. Strategy Generator — LLM 전략 생성 (opt-in)
+
+LLM을 활용하여 시장 상황에 맞는 새로운 전략 코드를 동적으로 생성한다.
+
+> **보안 경고**: `exec()` 사용으로 인한 보안 리스크 존재.
+> `evolution.generation_enabled = False` 기본값. 명시적 opt-in만 허용.
+
+### 14.6.1. 보안 다층 방어
+
+```
+[Layer 1] AST 기반 정적 분석
+  ├── BANNED_IMPORTS (28종): os, sys, subprocess, socket, http, ctypes, pickle...
+  ├── BANNED_BUILTINS (16종): exec, eval, __import__, compile, open, getattr...
+  ├── BANNED_ATTRIBUTES (11종): __subclasses__, __globals__, __builtins__...
+  └── Class 정의 금지
+
+[Layer 2] 정규식 보완 검사
+  ├── 문자열 결합을 통한 AST 우회 패턴 탐지
+  └── __import__, __subclasses__ 등 문자열 내 패턴
+
+[Layer 3] 제한된 실행 환경
+  ├── __builtins__: abs, min, max, sum, len, range, round, sorted, zip, enumerate, isinstance, float, int, str, list, dict, tuple, set, bool, print, True, False, None만 허용
+  └── 허용 모듈: math, statistics (numpy, pandas는 설치 시 추가)
+
+[Layer 4] 기능 검증
+  └── 생성된 함수 시그니처/반환값 형식 검증
+```
+
+### 14.6.2. 생성 플로우
+
+```
+[QuantAgent] 저변동성 시간대 감지
+    │
+    ▼
+quant:strategy_generate_request 발행
+    │
+    ▼
+[SWEngineerAgent] StrategyGenerator.generate()
+    ├── LLM에 전략 코드 생성 요청 (시장 컨텍스트 + 기존 성과 포함)
+    ├── 응답에서 코드 블록 추출
+    ├── CodeSafetyChecker.check() — 보안 검증
+    │   ├── 통과 → 제한된 namespace에서 exec()
+    │   └── 실패 → developer:strategy_rejected 발행
+    ├── 함수 시그니처/반환값 검증
+    └── CANDIDATE 상태로 Registry 등록
+        └── developer:strategy_generated 발행
+```
+
+---
+
+## 14.7. 이벤트 플로우
+
+자율 진화 아키텍처에서 사용하는 Redis Pub/Sub 채널:
+
+| 채널 | 발행자 | 구독자 | 설명 |
+|------|--------|--------|------|
+| `quant:regime_classified` | QuantAgent | PortfolioManager | 시장 국면 분류 결과 |
+| `quant:strategy_generate_request` | QuantAgent | SWEngineerAgent | 전략 생성 요청 |
+| `quant:strategy_shadow_start` | QuantAgent | QAAgent | 그림자 테스트 시작 |
+| `quant:strategy_promoted` | QAAgent | QuantAgent, Orchestrator | 전략 승격 |
+| `quant:strategy_demoted` | QAAgent | QuantAgent | 전략 강등 |
+| `quant:wfo_completed` | QuantAgent | (internal) | WFO 완료 |
+| `developer:strategy_generated` | SWEngineerAgent | QuantAgent | 전략 생성 성공 |
+| `developer:strategy_rejected` | SWEngineerAgent | QuantAgent | 전략 생성 거부 |
+
+## 14.8. 에이전트 역할 확장
+
+| 에이전트 | 추가된 역할 |
+|----------|------------|
+| **QuantAgent** | StrategyRegistry 관리, 주간 WFO 실행, RegimeClassifier 통합, 전략 생성 트리거 |
+| **QAAgent** | ShadowTester 관리, 일일 승격/강등 평가, 리포트에 shadow 섹션 추가 |
+| **SWEngineerAgent** | StrategyGenerator 호출, 코드 보안 검증, 생성 결과 이벤트 발행 |
+| **PortfolioManager** | 국면 기반 전략 가중치 동적 조정 |

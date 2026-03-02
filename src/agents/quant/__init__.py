@@ -1,7 +1,7 @@
 """퀀트 에이전트 패키지 - 기술적 분석 및 매매 신호 생성.
 
 4개 전략(Mean Reversion, Trend Following, Momentum, Breakout) 기반 신호 생성.
-스케줄: fast_scan(15분), deep_scan(60분), strategy_eval(240분).
+스케줄: fast_scan(15분), deep_scan(60분), strategy_eval(240분), wfo(주 1회).
 이벤트: 가격/거래량 급변 시 긴급 분석.
 """
 
@@ -16,7 +16,13 @@ from typing import Any
 from src.agents.base import BaseAgent
 from src.agents.quant.backtest import StrategyBacktester
 from src.agents.quant.indicators import IndicatorEngine
+from src.agents.quant.regime_classifier import RuleBasedRegimeClassifier
 from src.agents.quant.signals import SignalGenerator
+from src.agents.quant.strategies.registry import (
+    StrategyEntry,
+    StrategyRegistry,
+    StrategyStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +48,53 @@ class QuantAgent(BaseAgent):
         self._signal_gen = SignalGenerator(self._signal_cfg, self._strategy_cfg)
         self._backtester = StrategyBacktester()
 
+        # 전략 레지스트리 초기화
+        evolution_cfg = getattr(self._config, "evolution", None)
+        max_strategies = evolution_cfg.max_strategies if evolution_cfg else 50
+        self._registry = StrategyRegistry(max_strategies=max_strategies)
+        self._register_builtin_strategies()
+
+        # 시장 국면 분류기 초기화
+        self._regime_classifier = RuleBasedRegimeClassifier()
+
         # 이벤트 구독
         await self._subscribe("analyst:watchlist_updated", self._on_watchlist_updated)
         await self._subscribe("data:price_spike", self._on_price_spike)
         await self._subscribe("data:volume_spike", self._on_volume_spike)
         await self._subscribe("orchestrator:signal_request", self._on_signal_request)
         await self._subscribe("qa:trade_outcome", self._on_trade_outcome)
+        await self._subscribe("developer:strategy_generated", self._on_strategy_generated)
+        await self._subscribe("quant:strategy_promoted", self._on_strategy_promoted)
+        await self._subscribe("quant:strategy_demoted", self._on_strategy_demoted)
 
         # 현재 감시 목록
         self._watchlist: list[dict[str, Any]] = []
+
+    def _register_builtin_strategies(self) -> None:
+        """빌트인 전략을 레지스트리에 등록한다."""
+        strategies = {
+            "mean_reversion": {
+                "rsi_oversold": self._strategy_cfg.mean_reversion.rsi_oversold,
+                "rsi_overbought": self._strategy_cfg.mean_reversion.rsi_overbought,
+            },
+            "trend_following": {
+                "ma_short": self._strategy_cfg.trend_following.ma_short,
+                "ma_long": self._strategy_cfg.trend_following.ma_long,
+            },
+            "momentum": {},
+            "breakout": {
+                "lookback": self._strategy_cfg.breakout.lookback_days,
+            },
+        }
+
+        for name, params in strategies.items():
+            entry = StrategyEntry(
+                name=name,
+                status=StrategyStatus.LIVE,
+                parameters=params,
+                source="builtin",
+            )
+            self._registry.register(entry)
 
     async def _on_run(self) -> None:
         """스케줄 기반 메인 루프."""
@@ -59,6 +103,7 @@ class QuantAgent(BaseAgent):
         eval_interval = self._schedule_cfg.strategy_eval_minutes * 60
 
         last_fast = last_deep = last_eval = time.time()
+        last_wfo_day: str = ""
 
         while self._running:
             now = time.time()
@@ -75,6 +120,20 @@ class QuantAgent(BaseAgent):
                 result = await self._backtester.evaluate_strategies(self._llm_chat)
                 await self._publish("quant:strategy_eval", result)
                 last_eval = now
+
+            # 주간 WFO 실행 (일요일 UTC 00:00)
+            now_utc = datetime.now(tz=timezone.utc)
+            today_str = now_utc.strftime("%Y-%m-%d")
+            evolution_cfg = getattr(self._config, "evolution", None)
+            wfo_day = evolution_cfg.wfo.day_of_week if evolution_cfg else 6
+            wfo_hour = evolution_cfg.wfo.hour_utc if evolution_cfg else 0
+            if (
+                now_utc.weekday() == wfo_day
+                and now_utc.hour == wfo_hour
+                and today_str != last_wfo_day
+            ):
+                await self._run_wfo()
+                last_wfo_day = today_str
 
             await asyncio.sleep(10)
 
@@ -110,6 +169,26 @@ class QuantAgent(BaseAgent):
     async def _deep_scan(self) -> None:
         """깊은 멀티 타임프레임 분석 (60분마다)."""
         logger.info("[%s] Deep scan started", self.name)
+
+        # 국면 분류 (첫 번째 심볼의 1h 지표로 대표)
+        if self._watchlist:
+            try:
+                first_indicators = await self._compute_indicators(
+                    self._watchlist[0]["symbol"], "1h"
+                )
+                if first_indicators:
+                    classification = self._regime_classifier.classify(first_indicators)
+                    await self._publish("quant:regime_classified", {
+                        "regime": classification.regime.value,
+                        "confidence": classification.confidence,
+                        "adx": classification.adx,
+                        "atr_percentile": classification.atr_percentile,
+                        "strategy_weights": self._regime_classifier.get_strategy_weights(),
+                        "timestamp": classification.timestamp.isoformat(),
+                    })
+            except Exception:
+                logger.exception("[%s] Regime classification error", self.name)
+
         for coin in self._watchlist:
             try:
                 indicators_multi = {}
@@ -154,6 +233,91 @@ class QuantAgent(BaseAgent):
             signal.get("signal_score"),
         )
 
+    # ── Walk-Forward Optimization ──
+
+    async def _run_wfo(self) -> None:
+        """주간 Walk-Forward Optimization 실행."""
+        from src.agents.quant.strategies.builtin import (
+            DEFAULT_PARAM_GRIDS,
+            STRATEGY_FACTORIES,
+        )
+        from src.agents.quant.walk_forward_optimizer import (
+            WFOConfig,
+            WalkForwardOptimizer,
+        )
+
+        if self._exchange_client is None:
+            logger.warning("[%s] WFO skipped: no exchange client", self.name)
+            return
+
+        evolution_cfg = getattr(self._config, "evolution", None)
+        wfo_cfg = WFOConfig()
+        if evolution_cfg:
+            wfo_cfg.in_sample_bars = evolution_cfg.wfo.in_sample_hours
+            wfo_cfg.out_sample_bars = evolution_cfg.wfo.out_sample_hours
+
+        optimizer = WalkForwardOptimizer(wfo_cfg)
+        logger.info("[%s] Starting weekly WFO optimization", self.name)
+
+        live_strategies = self._registry.get_by_status(StrategyStatus.LIVE)
+        results: dict[str, Any] = {}
+
+        for entry in live_strategies:
+            if entry.source != "builtin" or entry.name not in STRATEGY_FACTORIES:
+                continue
+
+            factory = STRATEGY_FACTORIES[entry.name]
+            param_grid = DEFAULT_PARAM_GRIDS.get(entry.name, {})
+            if not param_grid:
+                continue
+
+            try:
+                # OHLCV 데이터 조회 (최근 2000개 바)
+                from src.core.event_engine import Bar
+
+                ohlcv_raw = await self._exchange_client.fetch_ohlcv(
+                    "BTC/USDT", timeframe="1h", limit=2000, agent_name=self.name,
+                )
+                bars = [
+                    Bar(
+                        symbol=o.symbol, timestamp=o.timestamp,
+                        open=o.open, high=o.high, low=o.low,
+                        close=o.close, volume=o.volume,
+                    )
+                    for o in ohlcv_raw
+                ]
+
+                summary = await optimizer.optimize(
+                    entry.name, factory, param_grid, bars,
+                )
+
+                if summary.is_robust and summary.best_params:
+                    self._registry.update_params(entry.name, summary.best_params)
+                    entry.wfo_results = {
+                        "best_params": summary.best_params,
+                        "avg_oos_score": summary.avg_oos_score,
+                        "overfit_ratio": summary.overfit_ratio,
+                    }
+                    logger.info(
+                        "[%s] WFO %s: params updated to %s",
+                        self.name, entry.name, summary.best_params,
+                    )
+
+                results[entry.name] = {
+                    "best_params": summary.best_params,
+                    "avg_oos_score": summary.avg_oos_score,
+                    "overfit_ratio": summary.overfit_ratio,
+                    "is_robust": summary.is_robust,
+                    "windows": len(summary.windows),
+                }
+            except Exception:
+                logger.exception("[%s] WFO error for %s", self.name, entry.name)
+
+        await self._publish("quant:wfo_completed", {
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "results": results,
+        })
+
     # ── 이벤트 핸들러 ──
 
     async def _on_watchlist_updated(self, data: dict[str, Any]) -> None:
@@ -195,10 +359,42 @@ class QuantAgent(BaseAgent):
         if signal:
             await self._publish("quant:signal", signal)
 
-
     async def _on_trade_outcome(self, data: dict[str, Any]) -> None:
         """매매 결과 수신 → 백테스터에 기록."""
         self._backtester.record_outcome(data)
+
+    async def _on_strategy_generated(self, data: dict[str, Any]) -> None:
+        """SWEngineerAgent에서 생성한 전략 수신 → SHADOW 전환."""
+        name = data.get("strategy_name", "")
+        entry = self._registry.get(name)
+        if entry and entry.status == StrategyStatus.CANDIDATE:
+            self._registry.transition(name, StrategyStatus.SHADOW)
+            await self._publish("quant:strategy_shadow_start", {
+                "strategy_name": name,
+                "parameters": entry.parameters,
+            })
+            logger.info("[%s] Strategy %s → SHADOW", self.name, name)
+
+    async def _on_strategy_promoted(self, data: dict[str, Any]) -> None:
+        """QAAgent의 승격 판정 수신."""
+        name = data.get("strategy_name", "")
+        entry = self._registry.get(name)
+        if entry and entry.status == StrategyStatus.SHADOW:
+            self._registry.transition(name, StrategyStatus.LIVE)
+            logger.info("[%s] Strategy %s promoted to LIVE", self.name, name)
+
+    async def _on_strategy_demoted(self, data: dict[str, Any]) -> None:
+        """QAAgent의 강등 판정 수신."""
+        name = data.get("strategy_name", "")
+        entry = self._registry.get(name)
+        if entry and entry.status in (StrategyStatus.SHADOW, StrategyStatus.LIVE):
+            self._registry.transition(name, StrategyStatus.DEPRECATED)
+            logger.info("[%s] Strategy %s demoted to DEPRECATED", self.name, name)
+
+    @property
+    def strategy_registry(self) -> StrategyRegistry:
+        """전략 레지스트리 접근자 (외부 에이전트에서 참조용)."""
+        return self._registry
 
 
 __all__ = ["QuantAgent"]

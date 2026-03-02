@@ -277,6 +277,10 @@ REDIS_PASSWORD=<local_redis_password>
 
 # ── 로깅 ──
 LOG_LEVEL=debug
+
+# ── 전략 진화 ──
+EVOLUTION_GENERATION_ENABLED=false
+EVOLUTION_MAX_STRATEGIES=50
 ```
 
 ## 4.2. `.env.paper` (GCP Paper Trading)
@@ -305,6 +309,10 @@ LOG_LEVEL=warning
 # ── 알림 ──
 NOTIFICATION_CHANNEL=openclaw
 NOTIFICATION_MIN_LEVEL=warning
+
+# ── 전략 진화 ──
+EVOLUTION_GENERATION_ENABLED=false
+EVOLUTION_MAX_STRATEGIES=50
 ```
 
 ## 4.3. `.env.production` (GCP 실거래)
@@ -333,6 +341,10 @@ LOG_LEVEL=warning
 # ── 알림 ──
 NOTIFICATION_CHANNEL=openclaw
 NOTIFICATION_MIN_LEVEL=warning
+
+# ── 전략 진화 ──
+EVOLUTION_GENERATION_ENABLED=false
+EVOLUTION_MAX_STRATEGIES=50
 ```
 
 ---
@@ -428,6 +440,10 @@ Grafana에서 다음 조건에 대한 알림 규칙을 설정:
 - [ ] 모든 합의 프로토콜 정상 동작 확인
 - [ ] Grafana 모니터링 대시보드 정상
 - [ ] OpenClaw 알림 정상 수신
+- [ ] 전략 레지스트리 빌트인 전략 4종 LIVE 등록 확인
+- [ ] 시장 국면 분류 (RegimeClassifier) 정상 동작 확인
+- [ ] 주간 WFO 최적화 실행 정상 완료 확인 (1회 이상)
+- [ ] LLM 전략 생성 비활성화 확인 (`evolution.generation_enabled=false`)
 - [ ] 관리자 수동 승인
 
 ## 7.2. Stage 3 → Stage 4 전환 (부분 실거래 → 완전 가동)
@@ -438,6 +454,7 @@ Grafana에서 다음 조건에 대한 알림 규칙을 설정:
 - [ ] TCA Implementation Shortfall 허용 범위 내
 - [ ] 일일 LLM 비용 한도 내 운영 확인
 - [ ] 전체 자금 대비 손실률 허용 범위 내
+- [ ] SHADOW 전략 승격/강등 메커니즘 정상 동작 (해당 시)
 - [ ] 관리자 수동 승인
 
 ---

@@ -36,6 +36,8 @@ class PortfolioManagerAgent(BaseAgent):
         self._risk_level: str = "low"
         self._market_direction: float = 0.0
         self._recent_signals: list[dict[str, Any]] = []
+        self._current_regime: str | None = None
+        self._regime_strategy_weights: dict[str, float] = {}
 
         # 모듈 초기화
         self._rebalancer = Rebalancer(self._portfolio_cfg)
@@ -47,6 +49,7 @@ class PortfolioManagerAgent(BaseAgent):
         await self._subscribe("analyst:market_report", self._on_market_report)
         await self._subscribe("risk:level_changed", self._on_risk_level_changed)
         await self._subscribe("executor:order_filled", self._on_order_filled)
+        await self._subscribe("quant:regime_classified", self._on_regime_classified)
 
     async def _on_run(self) -> None:
         last_rebalance_date = ""
@@ -160,6 +163,17 @@ class PortfolioManagerAgent(BaseAgent):
         """리스크 레벨 변경 수신."""
         self._risk_level = data.get("new_level", self._risk_level)
         logger.info("[%s] Risk level changed to: %s", self.name, self._risk_level)
+
+    async def _on_regime_classified(self, data: dict[str, Any]) -> None:
+        """시장 국면 업데이트 → 전략 가중치 동적 조정."""
+        self._current_regime = data.get("regime")
+        self._regime_strategy_weights = data.get("strategy_weights", {})
+        logger.info(
+            "[%s] Market regime: %s (confidence=%.2f) weights=%s",
+            self.name, self._current_regime,
+            data.get("confidence", 0),
+            self._regime_strategy_weights,
+        )
 
     async def _on_order_filled(self, data: dict[str, Any]) -> None:
         """주문 체결 → 포지션 목록에 추가."""
