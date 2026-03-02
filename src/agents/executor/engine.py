@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,6 +21,8 @@ from src.agents.base import BaseAgent
 from src.agents.executor.monitor import OrderMonitor
 from src.agents.executor.oms import OrderStateMachine
 from src.agents.executor.order import OrderBuilder
+from src.exchange.client import ExchangeError
+from src.exchange.models import OrderSide, OrderType
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +73,7 @@ class ExecutorAgent(BaseAgent):
 
             # 거래소-OMS 상태 동기화
             if now - last_reconcile >= reconcile_interval:
-                self._monitor.reconcile(self._pending_orders)
+                await self._reconcile_orders()
                 last_reconcile = now
 
             await asyncio.sleep(poll_interval)
@@ -110,7 +113,7 @@ class ExecutorAgent(BaseAgent):
         signal: dict[str, Any],
         quantity: float | None = None,
     ) -> None:
-        """단일 주문 생성 및 제출."""
+        """단일 주문 생성 및 거래소 제출."""
         order = self._order_builder.build(symbol, side, total_usd, price, signal, quantity)
 
         # OMS 상태: CREATED → SUBMITTED
@@ -119,11 +122,75 @@ class ExecutorAgent(BaseAgent):
         self._pending_orders[order["idempotency_key"]] = order
 
         await self._publish("executor:order_created", order)
-        logger.info("[%s] Order created: %s %s %s (key=%s)",
+        logger.info("[%s] Order submitted: %s %s %s (key=%s)",
                      self.name, side.upper(), symbol, order["order_type"],
                      order["idempotency_key"][:8])
 
-        # 실제 거래소 주문은 ExchangeClient 연동 시 실행
+        # 거래소 주문 전송
+        if self._exchange_client is None:
+            logger.warning("[%s] No exchange client — order not sent to exchange", self.name)
+            return
+
+        try:
+            # 매수: total_usd / price → quantity 계산
+            order_qty = quantity
+            if order_qty is None and price and price > 0:
+                order_qty = total_usd / price
+            elif order_qty is None:
+                # 시장가 매수: ticker 기준 수량 추정
+                ticker = await self._exchange_client.fetch_ticker(symbol, agent_name=self.name)
+                if ticker.last and ticker.last > 0:
+                    order_qty = total_usd / ticker.last
+                else:
+                    logger.error("[%s] Cannot determine quantity for %s", self.name, symbol)
+                    self._oms.transition(order, "cancelled")
+                    return
+
+            idem_key = uuid.UUID(order["idempotency_key"])
+            order_type_enum = (
+                OrderType.LIMIT if order["order_type"] == "limit" and price
+                else OrderType.MARKET
+            )
+
+            exchange_order = await self._exchange_client.create_order(
+                symbol=symbol,
+                side=OrderSide(side),
+                order_type=order_type_enum,
+                quantity=order_qty,
+                price=price if order_type_enum == OrderType.LIMIT else None,
+                idempotency_key=idem_key,
+                agent_name=self.name,
+            )
+
+            # OMS 업데이트
+            order["exchange_order_id"] = exchange_order.exchange_order_id
+            order["exchange_status"] = exchange_order.status
+            order["filled"] = exchange_order.filled
+            order["average_price"] = exchange_order.average
+
+            if exchange_order.status == "closed":
+                self._oms.transition(order, "filled")
+                order["filled_at"] = datetime.now(tz=timezone.utc).isoformat()
+                slippage = OrderMonitor.calculate_slippage(
+                    price or 0, exchange_order.average or 0
+                ) if price else 0
+                order["slippage"] = slippage
+                await self._publish("executor:order_filled", order)
+                self._pending_orders.pop(order["idempotency_key"], None)
+                logger.info("[%s] Order filled: %s %s avg=%.2f slip=%.4f",
+                             self.name, side.upper(), symbol,
+                             exchange_order.average or 0, slippage)
+            elif exchange_order.filled and exchange_order.filled > 0:
+                self._oms.transition(order, "partially_filled")
+
+        except ExchangeError as e:
+            logger.error("[%s] Exchange error: %s (retryable=%s)",
+                          self.name, e, e.retryable)
+            if not e.retryable:
+                self._oms.transition(order, "cancelled")
+                order["error"] = str(e)
+                await self._publish("executor:order_failed", order)
+                self._pending_orders.pop(order["idempotency_key"], None)
 
     async def _execute_twap(
         self, symbol: str, side: str, total_usd: float, price: float | None
@@ -146,6 +213,52 @@ class ExecutorAgent(BaseAgent):
 
             if i < intervals - 1:
                 await asyncio.sleep(interval_seconds)
+
+    # ── 거래소 조정 ──
+
+    async def _reconcile_orders(self) -> None:
+        """미체결 주문을 거래소와 동기화한다."""
+        if self._exchange_client is None:
+            self._monitor.reconcile(self._pending_orders)
+            return
+
+        from src.data.models.order import OrderState
+
+        to_remove: list[str] = []
+        for key, order in self._pending_orders.items():
+            if order.get("state") not in (
+                OrderState.SUBMITTED.value, OrderState.PARTIALLY_FILLED.value
+            ):
+                continue
+            ex_id = order.get("exchange_order_id")
+            if not ex_id:
+                continue
+            try:
+                ex_order = await self._exchange_client.fetch_order(
+                    ex_id, order["symbol"], agent_name=self.name,
+                )
+                order["filled"] = ex_order.filled
+                order["average_price"] = ex_order.average
+                order["exchange_status"] = ex_order.status
+
+                if ex_order.status == "closed":
+                    self._oms.transition(order, "filled")
+                    order["filled_at"] = datetime.now(tz=timezone.utc).isoformat()
+                    await self._publish("executor:order_filled", order)
+                    to_remove.append(key)
+                elif ex_order.status == "canceled":
+                    self._oms.transition(order, "cancelled")
+                    await self._publish("executor:order_cancelled", order)
+                    to_remove.append(key)
+            except ExchangeError:
+                logger.debug("[%s] Reconcile fetch failed: %s", self.name, ex_id)
+
+        for key in to_remove:
+            self._pending_orders.pop(key, None)
+
+        if self._pending_orders:
+            logger.info("[%s] Reconciliation: %d pending orders",
+                         self.name, len(self._pending_orders))
 
     # ── 이벤트 핸들러 ──
 

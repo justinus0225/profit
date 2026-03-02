@@ -34,6 +34,8 @@ class PortfolioManagerAgent(BaseAgent):
         # 현재 포트폴리오 상태
         self._positions: list[dict[str, Any]] = []
         self._risk_level: str = "low"
+        self._market_direction: float = 0.0
+        self._recent_signals: list[dict[str, Any]] = []
 
         # 모듈 초기화
         self._rebalancer = Rebalancer(self._portfolio_cfg)
@@ -44,6 +46,7 @@ class PortfolioManagerAgent(BaseAgent):
         await self._subscribe("quant:signal", self._on_signal)
         await self._subscribe("analyst:market_report", self._on_market_report)
         await self._subscribe("risk:level_changed", self._on_risk_level_changed)
+        await self._subscribe("executor:order_filled", self._on_order_filled)
 
     async def _on_run(self) -> None:
         last_rebalance_date = ""
@@ -141,12 +144,39 @@ class PortfolioManagerAgent(BaseAgent):
         })
 
     async def _on_signal(self, data: dict[str, Any]) -> None:
-        """퀀트 신호 수신 (정보 저장용)."""
+        """퀀트 신호 수신 — 최근 신호 캐시 (포지션 사이징 참고용)."""
+        self._recent_signals.append(data)
+        # 최근 50개만 유지
+        if len(self._recent_signals) > 50:
+            self._recent_signals = self._recent_signals[-50:]
 
     async def _on_market_report(self, data: dict[str, Any]) -> None:
-        """매크로 리포트 수신 (리밸런싱 참고)."""
+        """매크로 리포트 수신 — 시장 방향성 업데이트 (리밸런싱 참고)."""
+        self._market_direction = data.get("market_direction", 0)
+        logger.info("[%s] Market direction updated: %.2f (risk=%s)",
+                     self.name, self._market_direction, data.get("risk_level", "unknown"))
 
     async def _on_risk_level_changed(self, data: dict[str, Any]) -> None:
         """리스크 레벨 변경 수신."""
         self._risk_level = data.get("new_level", self._risk_level)
         logger.info("[%s] Risk level changed to: %s", self.name, self._risk_level)
+
+    async def _on_order_filled(self, data: dict[str, Any]) -> None:
+        """주문 체결 → 포지션 목록에 추가."""
+        if data.get("side") == "buy":
+            self._positions.append({
+                "symbol": data.get("symbol"),
+                "signal_id": data.get("signal_id"),
+                "entry_price": data.get("average_price") or data.get("price"),
+                "quantity": data.get("filled") or data.get("quantity"),
+                "holding_type": data.get("holding_type", "short_term"),
+                "opened_at": data.get("filled_at", datetime.now(tz=timezone.utc).isoformat()),
+                "pnl_pct": 0,
+            })
+            logger.info("[%s] Position opened: %s (total=%d)",
+                         self.name, data.get("symbol"), len(self._positions))
+        elif data.get("side") == "sell":
+            symbol = data.get("symbol")
+            self._positions = [p for p in self._positions if p.get("symbol") != symbol]
+            logger.info("[%s] Position closed: %s (total=%d)",
+                         self.name, symbol, len(self._positions))

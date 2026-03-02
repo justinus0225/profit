@@ -87,7 +87,7 @@ class AnalystAgent(BaseAgent):
 
             # 뉴스 크롤링 + 감성 분석
             if now - last_news >= news_interval:
-                result = await self._sentiment.crawl()
+                result = await self._sentiment.crawl(self._llm_chat)
                 await self._publish("analyst:sentiment_update", result)
                 last_news = now
 

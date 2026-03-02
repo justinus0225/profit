@@ -47,6 +47,7 @@ class QuantAgent(BaseAgent):
         await self._subscribe("data:price_spike", self._on_price_spike)
         await self._subscribe("data:volume_spike", self._on_volume_spike)
         await self._subscribe("orchestrator:signal_request", self._on_signal_request)
+        await self._subscribe("qa:trade_outcome", self._on_trade_outcome)
 
         # 현재 감시 목록
         self._watchlist: list[dict[str, Any]] = []
@@ -193,6 +194,11 @@ class QuantAgent(BaseAgent):
         )
         if signal:
             await self._publish("quant:signal", signal)
+
+
+    async def _on_trade_outcome(self, data: dict[str, Any]) -> None:
+        """매매 결과 수신 → 백테스터에 기록."""
+        self._backtester.record_outcome(data)
 
 
 __all__ = ["QuantAgent"]
