@@ -1,0 +1,37 @@
+# Paper Trading Sandbox 환경 (ARCHITECTURE.md P3 Stage 3).
+#
+# 실시간 데이터 수신 + 가상 체결 엔진으로 전략 검증.
+# 최소 2주간 운영 후 성과 기준 충족 확인.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+
+services:
+  # ── Sandbox PROFIT (Paper Trading 모드) ──
+  profit-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: profit-sandbox
+    restart: always
+    ports:
+      - "8001:8000"  # 프로덕션과 포트 구분
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://profit:${POSTGRES_PASSWORD:-profit_dev_password}@pgbouncer:6432/profit_db
+      REDIS_URL: redis://:${REDIS_PASSWORD:-profit_dev_password}@redis:6379/1  # DB 1 (프로덕션과 분리)
+      SYSTEM_PAPER_TRADING_MODE: "true"
+      SYSTEM_TRADING_ENABLED: "true"
+      LOG_LEVEL: INFO
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - profit-network
